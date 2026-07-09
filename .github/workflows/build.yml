@@ -982,11 +982,27 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Prepare latest aliases
+        run: |-
+          set -xeuo pipefail
+          shopt -s nullglob
+          for arch in amd64 arm64; do
+            debs=(dist/mbox_*_linux_${arch}.deb)
+            archives=(dist/mbox-*-linux-${arch}.tar.gz)
+            if ((${#debs[@]})); then
+              cp "${debs[0]}" "dist/mbox-linux-${arch}.deb"
+            fi
+            if ((${#archives[@]})); then
+              cp "${archives[0]}" "dist/mbox-linux-${arch}.tar.gz"
+            fi
+          done
+          ls -la dist
       - name: Upload builds
         if: ${{ env.PUBLISHED == 'false' }}
         run: |-
           export PATH="$PATH:$HOME/go/bin"
-          ghr --replace --draft --prerelease -p 5 "v${VERSION}" dist
+          ghr --replace -p 5 "v${VERSION}" dist
+          gh release edit "v${VERSION}" --latest --draft=false --prerelease=false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Replace builds
@@ -994,5 +1010,6 @@ jobs:
         run: |-
           export PATH="$PATH:$HOME/go/bin"
           ghr --replace -p 5 "v${VERSION}" dist
+          gh release edit "v${VERSION}" --latest --draft=false --prerelease=false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
