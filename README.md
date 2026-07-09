@@ -6,6 +6,21 @@ in sing-box.
 We don't guarantee all sing-box features are working. We recommend you maintain
 your own fork.
 
+## Fork Scope
+
+This fork tracks [enfein/mbox](https://github.com/enfein/mbox) on the `mieru`
+branch, which itself is based on [SagerNet/sing-box](https://github.com/SagerNet/sing-box).
+Compared with upstream `enfein/mbox`, this fork is primarily a packaging and
+release fork:
+
+- Build artifacts, packages, service files, completions, and Docker entrypoints
+  are named `mbox` instead of `sing-box`.
+- GitHub Actions are scoped to publish only Linux `amd64` and `arm64` binaries.
+- The module path and internal Go imports remain `github.com/sagernet/sing-box`
+  to reduce merge conflicts when syncing upstream changes.
+- Upstream changes are synced from `enfein/mbox` by an automated pull request
+  workflow instead of being pushed directly into `mieru`.
+
 ## Example Configuration with mieru Outbound (Proxy Client)
 
 ```js
