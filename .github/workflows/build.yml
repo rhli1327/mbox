@@ -82,8 +82,8 @@ jobs:
     strategy:
       matrix:
         include:
-          - { os: linux, arch: amd64 }
-          - { os: linux, arch: arm64 }
+          - { os: linux, arch: amd64, debian: amd64 }
+          - { os: linux, arch: arm64, debian: arm64 }
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
