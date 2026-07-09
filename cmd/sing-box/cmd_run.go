@@ -192,7 +192,7 @@ func run() error {
 			closed()
 			if osSignal != syscall.SIGHUP {
 				if err != nil {
-					log.Error(E.Cause(err, "sing-box did not closed properly"))
+					log.Error(E.Cause(err, "mbox did not closed properly"))
 				}
 				return nil
 			}
@@ -208,5 +208,5 @@ func closeMonitor(ctx context.Context) {
 		return
 	default:
 	}
-	log.Fatal("sing-box did not close!")
+	log.Fatal("mbox did not close!")
 }

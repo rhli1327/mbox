@@ -8,6 +8,8 @@
 /dist/
 /sing-box
 /sing-box.exe
+/mbox
+/mbox.exe
 /build/
 /*.jar
 /*.aar

@@ -25,7 +25,7 @@ var (
 )
 
 var mainCommand = &cobra.Command{
-	Use:              "sing-box",
+	Use:              "mbox",
 	PersistentPreRun: preRun,
 }
 

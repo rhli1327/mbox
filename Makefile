@@ -1,4 +1,4 @@
-NAME = sing-box
+NAME = mbox
 COMMIT = $(shell git rev-parse --short HEAD)
 TAGS ?= $(shell cat release/DEFAULT_BUILD_TAGS_OTHERS)
 
@@ -18,11 +18,11 @@ LIBBOX_FFI_CONFIG ?= ./experimental/libbox/ffi.json
 
 build:
 	export GOTOOLCHAIN=local && \
-	go build $(MAIN_PARAMS) $(MAIN)
+	go build -o bin/$(NAME) $(MAIN_PARAMS) $(MAIN)
 
 race:
 	export GOTOOLCHAIN=local && \
-	go build -race $(MAIN_PARAMS) $(MAIN)
+	go build -race -o bin/$(NAME) $(MAIN_PARAMS) $(MAIN)
 
 ci_build:
 	export GOTOOLCHAIN=local && \
@@ -278,8 +278,8 @@ docs_install:
 	source ./venv/bin/activate && pip install --force-reinstall mkdocs-material=="9.7.2" mkdocs-static-i18n=="1.2.*"
 
 clean:
-	rm -rf bin dist sing-box
-	rm -f $(shell go env GOPATH)/sing-box
+	rm -rf bin dist mbox
+	rm -f $(shell go env GOPATH)/bin/mbox
 
 update:
 	git fetch

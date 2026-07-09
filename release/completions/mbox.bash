@@ -1,6 +1,6 @@
-# bash completion for sing-box                             -*- shell-script -*-
+# bash completion for mbox                             -*- shell-script -*-
 
-__sing-box_debug()
+__mbox_debug()
 {
     if [[ -n ${BASH_COMP_DEBUG_FILE:-} ]]; then
         echo "$*" >> "${BASH_COMP_DEBUG_FILE}"
@@ -9,13 +9,13 @@ __sing-box_debug()
 
 # Homebrew on Macs have version 1.3 of bash-completion which doesn't include
 # _init_completion. This is a very minimal version of that function.
-__sing-box_init_completion()
+__mbox_init_completion()
 {
     COMPREPLY=()
     _get_comp_words_by_ref "$@" cur prev words cword
 }
 
-__sing-box_index_of_word()
+__mbox_index_of_word()
 {
     local w word=$1
     shift
@@ -27,7 +27,7 @@ __sing-box_index_of_word()
     index=-1
 }
 
-__sing-box_contains_word()
+__mbox_contains_word()
 {
     local w word=$1; shift
     for w in "$@"; do
@@ -36,9 +36,9 @@ __sing-box_contains_word()
     return 1
 }
 
-__sing-box_handle_go_custom_completion()
+__mbox_handle_go_custom_completion()
 {
-    __sing-box_debug "${FUNCNAME[0]}: cur is ${cur}, words[*] is ${words[*]}, #words[@] is ${#words[@]}"
+    __mbox_debug "${FUNCNAME[0]}: cur is ${cur}, words[*] is ${words[*]}, #words[@] is ${#words[@]}"
 
     local shellCompDirectiveError=1
     local shellCompDirectiveNoSpace=2
@@ -49,23 +49,23 @@ __sing-box_handle_go_custom_completion()
     local out requestComp lastParam lastChar comp directive args
 
     # Prepare the command to request completions for the program.
-    # Calling ${words[0]} instead of directly sing-box allows handling aliases
+    # Calling ${words[0]} instead of directly mbox allows handling aliases
     args=("${words[@]:1}")
     # Disable ActiveHelp which is not supported for bash completion v1
     requestComp="SING_BOX_ACTIVE_HELP=0 ${words[0]} __completeNoDesc ${args[*]}"
 
     lastParam=${words[$((${#words[@]}-1))]}
     lastChar=${lastParam:$((${#lastParam}-1)):1}
-    __sing-box_debug "${FUNCNAME[0]}: lastParam ${lastParam}, lastChar ${lastChar}"
+    __mbox_debug "${FUNCNAME[0]}: lastParam ${lastParam}, lastChar ${lastChar}"
 
     if [ -z "${cur}" ] && [ "${lastChar}" != "=" ]; then
         # If the last parameter is complete (there is a space following it)
         # We add an extra empty parameter so we can indicate this to the go method.
-        __sing-box_debug "${FUNCNAME[0]}: Adding extra empty parameter"
+        __mbox_debug "${FUNCNAME[0]}: Adding extra empty parameter"
         requestComp="${requestComp} \"\""
     fi
 
-    __sing-box_debug "${FUNCNAME[0]}: calling ${requestComp}"
+    __mbox_debug "${FUNCNAME[0]}: calling ${requestComp}"
     # Use eval to handle any environment variables and such
     out=$(eval "${requestComp}" 2>/dev/null)
 
@@ -77,23 +77,23 @@ __sing-box_handle_go_custom_completion()
         # There is not directive specified
         directive=0
     fi
-    __sing-box_debug "${FUNCNAME[0]}: the completion directive is: ${directive}"
-    __sing-box_debug "${FUNCNAME[0]}: the completions are: ${out}"
+    __mbox_debug "${FUNCNAME[0]}: the completion directive is: ${directive}"
+    __mbox_debug "${FUNCNAME[0]}: the completions are: ${out}"
 
     if [ $((directive & shellCompDirectiveError)) -ne 0 ]; then
         # Error code.  No completion.
-        __sing-box_debug "${FUNCNAME[0]}: received error from custom completion go code"
+        __mbox_debug "${FUNCNAME[0]}: received error from custom completion go code"
         return
     else
         if [ $((directive & shellCompDirectiveNoSpace)) -ne 0 ]; then
             if [[ $(type -t compopt) = "builtin" ]]; then
-                __sing-box_debug "${FUNCNAME[0]}: activating no space"
+                __mbox_debug "${FUNCNAME[0]}: activating no space"
                 compopt -o nospace
             fi
         fi
         if [ $((directive & shellCompDirectiveNoFileComp)) -ne 0 ]; then
             if [[ $(type -t compopt) = "builtin" ]]; then
-                __sing-box_debug "${FUNCNAME[0]}: activating no file completion"
+                __mbox_debug "${FUNCNAME[0]}: activating no file completion"
                 compopt +o default
             fi
         fi
@@ -109,7 +109,7 @@ __sing-box_handle_go_custom_completion()
         done
 
         filteringCmd="_filedir $fullFilter"
-        __sing-box_debug "File filtering command: $filteringCmd"
+        __mbox_debug "File filtering command: $filteringCmd"
         $filteringCmd
     elif [ $((directive & shellCompDirectiveFilterDirs)) -ne 0 ]; then
         # File completion for directories only
@@ -117,10 +117,10 @@ __sing-box_handle_go_custom_completion()
         # Use printf to strip any trailing newline
         subdir=$(printf "%s" "${out}")
         if [ -n "$subdir" ]; then
-            __sing-box_debug "Listing directories in $subdir"
-            __sing-box_handle_subdirs_in_dir_flag "$subdir"
+            __mbox_debug "Listing directories in $subdir"
+            __mbox_handle_subdirs_in_dir_flag "$subdir"
         else
-            __sing-box_debug "Listing directories in ."
+            __mbox_debug "Listing directories in ."
             _filedir -d
         fi
     else
@@ -130,9 +130,9 @@ __sing-box_handle_go_custom_completion()
     fi
 }
 
-__sing-box_handle_reply()
+__mbox_handle_reply()
 {
-    __sing-box_debug "${FUNCNAME[0]}"
+    __mbox_debug "${FUNCNAME[0]}"
     local comp
     case $cur in
         -*)
@@ -160,7 +160,7 @@ __sing-box_handle_reply()
 
                 local index flag
                 flag="${cur%=*}"
-                __sing-box_index_of_word "${flag}" "${flags_with_completion[@]}"
+                __mbox_index_of_word "${flag}" "${flags_with_completion[@]}"
                 COMPREPLY=()
                 if [[ ${index} -ge 0 ]]; then
                     PREFIX=""
@@ -184,7 +184,7 @@ __sing-box_handle_reply()
 
     # check if we are handling a flag with special work handling
     local index
-    __sing-box_index_of_word "${prev}" "${flags_with_completion[@]}"
+    __mbox_index_of_word "${prev}" "${flags_with_completion[@]}"
     if [[ ${index} -ge 0 ]]; then
         ${flags_completion[${index}]}
         return
@@ -201,7 +201,7 @@ __sing-box_handle_reply()
         completions+=("${must_have_one_noun[@]}")
     elif [[ -n "${has_completion_function}" ]]; then
         # if a go completion function is provided, defer to that function
-        __sing-box_handle_go_custom_completion
+        __mbox_handle_go_custom_completion
     fi
     if [[ ${#must_have_one_flag[@]} -ne 0 ]]; then
         completions+=("${must_have_one_flag[@]}")
@@ -217,9 +217,9 @@ __sing-box_handle_reply()
     fi
 
     if [[ ${#COMPREPLY[@]} -eq 0 ]]; then
-        if declare -F __sing-box_custom_func >/dev/null; then
+        if declare -F __mbox_custom_func >/dev/null; then
             # try command name qualified custom func
-            __sing-box_custom_func
+            __mbox_custom_func
         else
             # otherwise fall back to unqualified for compatibility
             declare -F __custom_func >/dev/null && __custom_func
@@ -239,21 +239,21 @@ __sing-box_handle_reply()
 }
 
 # The arguments should be in the form "ext1|ext2|extn"
-__sing-box_handle_filename_extension_flag()
+__mbox_handle_filename_extension_flag()
 {
     local ext="$1"
     _filedir "@(${ext})"
 }
 
-__sing-box_handle_subdirs_in_dir_flag()
+__mbox_handle_subdirs_in_dir_flag()
 {
     local dir="$1"
     pushd "${dir}" >/dev/null 2>&1 && _filedir -d && popd >/dev/null 2>&1 || return
 }
 
-__sing-box_handle_flag()
+__mbox_handle_flag()
 {
-    __sing-box_debug "${FUNCNAME[0]}: c is $c words[c] is ${words[c]}"
+    __mbox_debug "${FUNCNAME[0]}: c is $c words[c] is ${words[c]}"
 
     # if a command required a flag, and we found it, unset must_have_one_flag()
     local flagname=${words[c]}
@@ -264,13 +264,13 @@ __sing-box_handle_flag()
         flagname=${flagname%=*} # strip everything after the =
         flagname="${flagname}=" # but put the = back
     fi
-    __sing-box_debug "${FUNCNAME[0]}: looking for ${flagname}"
-    if __sing-box_contains_word "${flagname}" "${must_have_one_flag[@]}"; then
+    __mbox_debug "${FUNCNAME[0]}: looking for ${flagname}"
+    if __mbox_contains_word "${flagname}" "${must_have_one_flag[@]}"; then
         must_have_one_flag=()
     fi
 
     # if you set a flag which only applies to this command, don't show subcommands
-    if __sing-box_contains_word "${flagname}" "${local_nonpersistent_flags[@]}"; then
+    if __mbox_contains_word "${flagname}" "${local_nonpersistent_flags[@]}"; then
       commands=()
     fi
 
@@ -287,8 +287,8 @@ __sing-box_handle_flag()
     fi
 
     # skip the argument to a two word flag
-    if [[ ${words[c]} != *"="* ]] && __sing-box_contains_word "${words[c]}" "${two_word_flags[@]}"; then
-        __sing-box_debug "${FUNCNAME[0]}: found a flag ${words[c]}, skip the next argument"
+    if [[ ${words[c]} != *"="* ]] && __mbox_contains_word "${words[c]}" "${two_word_flags[@]}"; then
+        __mbox_debug "${FUNCNAME[0]}: found a flag ${words[c]}, skip the next argument"
         c=$((c+1))
         # if we are looking for a flags value, don't show commands
         if [[ $c -eq $cword ]]; then
@@ -300,13 +300,13 @@ __sing-box_handle_flag()
 
 }
 
-__sing-box_handle_noun()
+__mbox_handle_noun()
 {
-    __sing-box_debug "${FUNCNAME[0]}: c is $c words[c] is ${words[c]}"
+    __mbox_debug "${FUNCNAME[0]}: c is $c words[c] is ${words[c]}"
 
-    if __sing-box_contains_word "${words[c]}" "${must_have_one_noun[@]}"; then
+    if __mbox_contains_word "${words[c]}" "${must_have_one_noun[@]}"; then
         must_have_one_noun=()
-    elif __sing-box_contains_word "${words[c]}" "${noun_aliases[@]}"; then
+    elif __mbox_contains_word "${words[c]}" "${noun_aliases[@]}"; then
         must_have_one_noun=()
     fi
 
@@ -314,55 +314,55 @@ __sing-box_handle_noun()
     c=$((c+1))
 }
 
-__sing-box_handle_command()
+__mbox_handle_command()
 {
-    __sing-box_debug "${FUNCNAME[0]}: c is $c words[c] is ${words[c]}"
+    __mbox_debug "${FUNCNAME[0]}: c is $c words[c] is ${words[c]}"
 
     local next_command
     if [[ -n ${last_command} ]]; then
         next_command="_${last_command}_${words[c]//:/__}"
     else
         if [[ $c -eq 0 ]]; then
-            next_command="_sing-box_root_command"
+            next_command="_mbox_root_command"
         else
             next_command="_${words[c]//:/__}"
         fi
     fi
     c=$((c+1))
-    __sing-box_debug "${FUNCNAME[0]}: looking for ${next_command}"
+    __mbox_debug "${FUNCNAME[0]}: looking for ${next_command}"
     declare -F "$next_command" >/dev/null && $next_command
 }
 
-__sing-box_handle_word()
+__mbox_handle_word()
 {
     if [[ $c -ge $cword ]]; then
-        __sing-box_handle_reply
+        __mbox_handle_reply
         return
     fi
-    __sing-box_debug "${FUNCNAME[0]}: c is $c words[c] is ${words[c]}"
+    __mbox_debug "${FUNCNAME[0]}: c is $c words[c] is ${words[c]}"
     if [[ "${words[c]}" == -* ]]; then
-        __sing-box_handle_flag
-    elif __sing-box_contains_word "${words[c]}" "${commands[@]}"; then
-        __sing-box_handle_command
+        __mbox_handle_flag
+    elif __mbox_contains_word "${words[c]}" "${commands[@]}"; then
+        __mbox_handle_command
     elif [[ $c -eq 0 ]]; then
-        __sing-box_handle_command
-    elif __sing-box_contains_word "${words[c]}" "${command_aliases[@]}"; then
+        __mbox_handle_command
+    elif __mbox_contains_word "${words[c]}" "${command_aliases[@]}"; then
         # aliashash variable is an associative array which is only supported in bash > 3.
         if [[ -z "${BASH_VERSION:-}" || "${BASH_VERSINFO[0]:-}" -gt 3 ]]; then
             words[c]=${aliashash[${words[c]}]}
-            __sing-box_handle_command
+            __mbox_handle_command
         else
-            __sing-box_handle_noun
+            __mbox_handle_noun
         fi
     else
-        __sing-box_handle_noun
+        __mbox_handle_noun
     fi
-    __sing-box_handle_word
+    __mbox_handle_word
 }
 
-_sing-box_check()
+_mbox_check()
 {
-    last_command="sing-box_check"
+    last_command="mbox_check"
 
     command_aliases=()
 
@@ -390,9 +390,9 @@ _sing-box_check()
     noun_aliases=()
 }
 
-_sing-box_format()
+_mbox_format()
 {
-    last_command="sing-box_format"
+    last_command="mbox_format"
 
     command_aliases=()
 
@@ -424,9 +424,9 @@ _sing-box_format()
     noun_aliases=()
 }
 
-_sing-box_generate_ech-keypair()
+_mbox_generate_ech-keypair()
 {
-    last_command="sing-box_generate_ech-keypair"
+    last_command="mbox_generate_ech-keypair"
 
     command_aliases=()
 
@@ -456,9 +456,9 @@ _sing-box_generate_ech-keypair()
     noun_aliases=()
 }
 
-_sing-box_generate_rand()
+_mbox_generate_rand()
 {
-    last_command="sing-box_generate_rand"
+    last_command="mbox_generate_rand"
 
     command_aliases=()
 
@@ -490,9 +490,9 @@ _sing-box_generate_rand()
     noun_aliases=()
 }
 
-_sing-box_generate_reality-keypair()
+_mbox_generate_reality-keypair()
 {
-    last_command="sing-box_generate_reality-keypair"
+    last_command="mbox_generate_reality-keypair"
 
     command_aliases=()
 
@@ -520,9 +520,9 @@ _sing-box_generate_reality-keypair()
     noun_aliases=()
 }
 
-_sing-box_generate_tls-keypair()
+_mbox_generate_tls-keypair()
 {
-    last_command="sing-box_generate_tls-keypair"
+    last_command="mbox_generate_tls-keypair"
 
     command_aliases=()
 
@@ -556,9 +556,9 @@ _sing-box_generate_tls-keypair()
     noun_aliases=()
 }
 
-_sing-box_generate_uuid()
+_mbox_generate_uuid()
 {
-    last_command="sing-box_generate_uuid"
+    last_command="mbox_generate_uuid"
 
     command_aliases=()
 
@@ -586,9 +586,9 @@ _sing-box_generate_uuid()
     noun_aliases=()
 }
 
-_sing-box_generate_vapid-keypair()
+_mbox_generate_vapid-keypair()
 {
-    last_command="sing-box_generate_vapid-keypair"
+    last_command="mbox_generate_vapid-keypair"
 
     command_aliases=()
 
@@ -616,9 +616,9 @@ _sing-box_generate_vapid-keypair()
     noun_aliases=()
 }
 
-_sing-box_generate_wg-keypair()
+_mbox_generate_wg-keypair()
 {
-    last_command="sing-box_generate_wg-keypair"
+    last_command="mbox_generate_wg-keypair"
 
     command_aliases=()
 
@@ -646,9 +646,9 @@ _sing-box_generate_wg-keypair()
     noun_aliases=()
 }
 
-_sing-box_generate()
+_mbox_generate()
 {
-    last_command="sing-box_generate"
+    last_command="mbox_generate"
 
     command_aliases=()
 
@@ -683,9 +683,9 @@ _sing-box_generate()
     noun_aliases=()
 }
 
-_sing-box_geoip_export()
+_mbox_geoip_export()
 {
-    last_command="sing-box_geoip_export"
+    last_command="mbox_geoip_export"
 
     command_aliases=()
 
@@ -722,9 +722,9 @@ _sing-box_geoip_export()
     noun_aliases=()
 }
 
-_sing-box_geoip_list()
+_mbox_geoip_list()
 {
-    last_command="sing-box_geoip_list"
+    last_command="mbox_geoip_list"
 
     command_aliases=()
 
@@ -755,9 +755,9 @@ _sing-box_geoip_list()
     noun_aliases=()
 }
 
-_sing-box_geoip_lookup()
+_mbox_geoip_lookup()
 {
-    last_command="sing-box_geoip_lookup"
+    last_command="mbox_geoip_lookup"
 
     command_aliases=()
 
@@ -788,9 +788,9 @@ _sing-box_geoip_lookup()
     noun_aliases=()
 }
 
-_sing-box_geoip()
+_mbox_geoip()
 {
-    last_command="sing-box_geoip"
+    last_command="mbox_geoip"
 
     command_aliases=()
 
@@ -824,9 +824,9 @@ _sing-box_geoip()
     noun_aliases=()
 }
 
-_sing-box_geosite_export()
+_mbox_geosite_export()
 {
-    last_command="sing-box_geosite_export"
+    last_command="mbox_geosite_export"
 
     command_aliases=()
 
@@ -863,9 +863,9 @@ _sing-box_geosite_export()
     noun_aliases=()
 }
 
-_sing-box_geosite_list()
+_mbox_geosite_list()
 {
-    last_command="sing-box_geosite_list"
+    last_command="mbox_geosite_list"
 
     command_aliases=()
 
@@ -896,9 +896,9 @@ _sing-box_geosite_list()
     noun_aliases=()
 }
 
-_sing-box_geosite_lookup()
+_mbox_geosite_lookup()
 {
-    last_command="sing-box_geosite_lookup"
+    last_command="mbox_geosite_lookup"
 
     command_aliases=()
 
@@ -929,9 +929,9 @@ _sing-box_geosite_lookup()
     noun_aliases=()
 }
 
-_sing-box_geosite()
+_mbox_geosite()
 {
-    last_command="sing-box_geosite"
+    last_command="mbox_geosite"
 
     command_aliases=()
 
@@ -965,9 +965,9 @@ _sing-box_geosite()
     noun_aliases=()
 }
 
-_sing-box_merge()
+_mbox_merge()
 {
-    last_command="sing-box_merge"
+    last_command="mbox_merge"
 
     command_aliases=()
 
@@ -995,9 +995,9 @@ _sing-box_merge()
     noun_aliases=()
 }
 
-_sing-box_rule-set_compile()
+_mbox_rule-set_compile()
 {
-    last_command="sing-box_rule-set_compile"
+    last_command="mbox_rule-set_compile"
 
     command_aliases=()
 
@@ -1031,9 +1031,9 @@ _sing-box_rule-set_compile()
     noun_aliases=()
 }
 
-_sing-box_rule-set_convert()
+_mbox_rule-set_convert()
 {
-    last_command="sing-box_rule-set_convert"
+    last_command="mbox_rule-set_convert"
 
     command_aliases=()
 
@@ -1073,9 +1073,9 @@ _sing-box_rule-set_convert()
     noun_aliases=()
 }
 
-_sing-box_rule-set_decompile()
+_mbox_rule-set_decompile()
 {
-    last_command="sing-box_rule-set_decompile"
+    last_command="mbox_rule-set_decompile"
 
     command_aliases=()
 
@@ -1109,9 +1109,9 @@ _sing-box_rule-set_decompile()
     noun_aliases=()
 }
 
-_sing-box_rule-set_format()
+_mbox_rule-set_format()
 {
-    last_command="sing-box_rule-set_format"
+    last_command="mbox_rule-set_format"
 
     command_aliases=()
 
@@ -1143,9 +1143,9 @@ _sing-box_rule-set_format()
     noun_aliases=()
 }
 
-_sing-box_rule-set_match()
+_mbox_rule-set_match()
 {
-    last_command="sing-box_rule-set_match"
+    last_command="mbox_rule-set_match"
 
     command_aliases=()
 
@@ -1179,9 +1179,9 @@ _sing-box_rule-set_match()
     noun_aliases=()
 }
 
-_sing-box_rule-set_merge()
+_mbox_rule-set_merge()
 {
-    last_command="sing-box_rule-set_merge"
+    last_command="mbox_rule-set_merge"
 
     command_aliases=()
 
@@ -1209,9 +1209,9 @@ _sing-box_rule-set_merge()
     noun_aliases=()
 }
 
-_sing-box_rule-set_upgrade()
+_mbox_rule-set_upgrade()
 {
-    last_command="sing-box_rule-set_upgrade"
+    last_command="mbox_rule-set_upgrade"
 
     command_aliases=()
 
@@ -1243,9 +1243,9 @@ _sing-box_rule-set_upgrade()
     noun_aliases=()
 }
 
-_sing-box_rule-set()
+_mbox_rule-set()
 {
-    last_command="sing-box_rule-set"
+    last_command="mbox_rule-set"
 
     command_aliases=()
 
@@ -1280,9 +1280,9 @@ _sing-box_rule-set()
     noun_aliases=()
 }
 
-_sing-box_run()
+_mbox_run()
 {
-    last_command="sing-box_run"
+    last_command="mbox_run"
 
     command_aliases=()
 
@@ -1310,9 +1310,9 @@ _sing-box_run()
     noun_aliases=()
 }
 
-_sing-box_tools_connect()
+_mbox_tools_connect()
 {
-    last_command="sing-box_tools_connect"
+    last_command="mbox_tools_connect"
 
     command_aliases=()
 
@@ -1349,9 +1349,9 @@ _sing-box_tools_connect()
     noun_aliases=()
 }
 
-_sing-box_tools_fetch()
+_mbox_tools_fetch()
 {
-    last_command="sing-box_tools_fetch"
+    last_command="mbox_tools_fetch"
 
     command_aliases=()
 
@@ -1382,9 +1382,9 @@ _sing-box_tools_fetch()
     noun_aliases=()
 }
 
-_sing-box_tools_synctime()
+_mbox_tools_synctime()
 {
-    last_command="sing-box_tools_synctime"
+    last_command="mbox_tools_synctime"
 
     command_aliases=()
 
@@ -1431,9 +1431,9 @@ _sing-box_tools_synctime()
     noun_aliases=()
 }
 
-_sing-box_tools()
+_mbox_tools()
 {
-    last_command="sing-box_tools"
+    last_command="mbox_tools"
 
     command_aliases=()
 
@@ -1467,9 +1467,9 @@ _sing-box_tools()
     noun_aliases=()
 }
 
-_sing-box_version()
+_mbox_version()
 {
-    last_command="sing-box_version"
+    last_command="mbox_version"
 
     command_aliases=()
 
@@ -1501,9 +1501,9 @@ _sing-box_version()
     noun_aliases=()
 }
 
-_sing-box_root_command()
+_mbox_root_command()
 {
-    last_command="sing-box"
+    last_command="mbox"
 
     command_aliases=()
 
@@ -1541,7 +1541,7 @@ _sing-box_root_command()
     noun_aliases=()
 }
 
-__start_sing-box()
+__start_mbox()
 {
     local cur prev words cword split
     declare -A flaghash 2>/dev/null || :
@@ -1549,7 +1549,7 @@ __start_sing-box()
     if declare -F _init_completion >/dev/null 2>&1; then
         _init_completion -s || return
     else
-        __sing-box_init_completion -n "=" || return
+        __mbox_init_completion -n "=" || return
     fi
 
     local c=0
@@ -1559,7 +1559,7 @@ __start_sing-box()
     local local_nonpersistent_flags=()
     local flags_with_completion=()
     local flags_completion=()
-    local commands=("sing-box")
+    local commands=("mbox")
     local command_aliases=()
     local must_have_one_flag=()
     local must_have_one_noun=()
@@ -1568,13 +1568,13 @@ __start_sing-box()
     local nouns=()
     local noun_aliases=()
 
-    __sing-box_handle_word
+    __mbox_handle_word
 }
 
 if [[ $(type -t compopt) = "builtin" ]]; then
-    complete -o default -F __start_sing-box sing-box
+    complete -o default -F __start_mbox mbox
 else
-    complete -o default -o nospace -F __start_sing-box sing-box
+    complete -o default -o nospace -F __start_mbox mbox
 fi
 
 # ex: ts=4 sw=4 et filetype=sh

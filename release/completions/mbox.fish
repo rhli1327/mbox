@@ -1,4 +1,4 @@
-# fish completion for sing-box                             -*- shell-script -*-
+# fish completion for mbox                             -*- shell-script -*-
 
 function __sing_box_debug
     set -l file "$BASH_COMP_DEBUG_FILE"
@@ -215,21 +215,21 @@ end
 # so we can properly delete any completions provided by another script.
 # Only do this if the program can be found, or else fish may print some errors; besides,
 # the existing completions will only be loaded if the program can be found.
-if type -q "sing-box"
+if type -q "mbox"
     # The space after the program name is essential to trigger completion for the program
     # and not completion of the program name itself.
     # Also, we use '> /dev/null 2>&1' since '&>' is not supported in older versions of fish.
-    complete --do-complete "sing-box " > /dev/null 2>&1
+    complete --do-complete "mbox " > /dev/null 2>&1
 end
 
 # Remove any pre-existing completions for the program since we will be handling all of them.
-complete -c sing-box -e
+complete -c mbox -e
 
 # this will get called after the two calls below and clear the $__sing_box_perform_completion_once_result global
-complete -c sing-box -n '__sing_box_clear_perform_completion_once_result'
+complete -c mbox -n '__sing_box_clear_perform_completion_once_result'
 # The call to __sing_box_prepare_completions will setup __sing_box_comp_results
 # which provides the program's completion choices.
 # If this doesn't require order preservation, we don't use the -k flag
-complete -c sing-box -n 'not __sing_box_requires_order_preservation && __sing_box_prepare_completions' -f -a '$__sing_box_comp_results'
+complete -c mbox -n 'not __sing_box_requires_order_preservation && __sing_box_prepare_completions' -f -a '$__sing_box_comp_results'
 # otherwise we use the -k flag
-complete -k -c sing-box -n '__sing_box_requires_order_preservation && __sing_box_prepare_completions' -f -a '$__sing_box_comp_results'
+complete -k -c mbox -n '__sing_box_requires_order_preservation && __sing_box_prepare_completions' -f -a '$__sing_box_comp_results'
