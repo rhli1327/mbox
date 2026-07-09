@@ -57,7 +57,7 @@ jobs:
       - name: Calculate version
         if: github.event_name != 'workflow_dispatch'
         run: |-
-          go run -v ./cmd/internal/read_tag --ci --nightly
+          go run -v ./cmd/internal/read_tag --ci --nightly || echo "version=1.13.13-mbox.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
       - name: Set outputs
         id: outputs
         run: |-
