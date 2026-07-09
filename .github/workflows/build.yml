@@ -45,6 +45,10 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
           fetch-depth: 0
+      - name: Fetch upstream tags
+        run: |-
+          git remote add upstream https://github.com/enfein/mbox.git
+          git fetch upstream mieru --tags --force
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -57,7 +61,11 @@ jobs:
       - name: Calculate version
         if: github.event_name != 'workflow_dispatch'
         run: |-
-          go run -v ./cmd/internal/read_tag --ci --nightly || echo "version=1.13.13-mbox.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          go run -v ./cmd/internal/read_tag --ci --nightly || {
+            upstream_tag=$(git describe --tags --abbrev=0 upstream/mieru)
+            upstream_version="${upstream_tag#v}"
+            echo "version=${upstream_version}-mbox.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          }
       - name: Set outputs
         id: outputs
         run: |-

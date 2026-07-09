@@ -31,7 +31,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/enfein/mbox.git
-          git fetch upstream mieru
+          git fetch upstream mieru --tags --force
           git checkout -B sync-upstream-mieru
           git merge --no-edit upstream/mieru
           if git diff --quiet origin/mieru...HEAD; then
