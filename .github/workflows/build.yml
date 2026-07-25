@@ -103,8 +103,10 @@ jobs:
       max-parallel: 13
       matrix:
         include:
-          - { os: linux, arch: amd64, debian: amd64 }
-          - { os: linux, arch: arm64, debian: arm64 }
+          - { os: linux, arch: amd64, variant: purego, naive: true }
+          - { os: linux, arch: amd64, variant: musl, naive: true, debian: amd64 }
+          - { os: linux, arch: arm64, variant: purego, naive: true }
+          - { os: linux, arch: arm64, variant: musl, naive: true, debian: arm64 }
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
@@ -191,7 +193,7 @@ jobs:
         run: |
           set -xeuo pipefail
           if [[ "${{ matrix.naive }}" == "true" ]]; then
-            TAGS=$(cat release/DEFAULT_BUILD_TAGS)
+            TAGS="$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_naive_outbound"
           else
             TAGS=$(cat release/DEFAULT_BUILD_TAGS_OTHERS)
           fi
