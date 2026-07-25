@@ -1,0 +1,173 @@
+name: Build traffic statistics Debian channel
+
+on:
+  push:
+    branches:
+      - traffic-statistics
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: traffic-statistics-release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Debian package (${{ matrix.debian_arch }})
+    if: github.ref == 'refs/heads/traffic-statistics'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - go_arch: amd64
+            debian_arch: amd64
+          - go_arch: arm64
+            debian_arch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.25.12
+          cache: true
+
+      - name: Resolve version
+        run: |
+          set -xeuo pipefail
+          git fetch origin mieru --tags --force
+          upstream_base="$(git merge-base HEAD origin/mieru)"
+          base_tag="$(git describe --tags --abbrev=0 "$upstream_base")"
+          base_version="${base_tag#v}"
+          traffic_version="${base_version}+traffic.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::7}"
+          echo "TRAFFIC_VERSION=${traffic_version}" >> "$GITHUB_ENV"
+
+      - name: Clone cronet-go
+        run: |
+          set -xeuo pipefail
+          cronet_go_version="$(cat .github/CRONET_GO_VERSION)"
+          git init ~/cronet-go
+          git -C ~/cronet-go remote add origin https://github.com/sagernet/cronet-go.git
+          git -C ~/cronet-go fetch --depth=1 origin "$cronet_go_version"
+          git -C ~/cronet-go checkout FETCH_HEAD
+          git -C ~/cronet-go submodule update --init --recursive --depth=1
+
+      - name: Prepare musl toolchain
+        env:
+          TARGET_ARCH: ${{ matrix.go_arch }}
+        run: |
+          set -xeuo pipefail
+          rm -f ~/cronet-go/naiveproxy/src/build/linux/sysroot_scripts/keyring.gpg
+          cd ~/cronet-go
+          GPG_TTY=/dev/null ./naiveproxy/src/build/linux/sysroot_scripts/generate_keyring.sh
+          go run ./cmd/build-naive --target="linux/${TARGET_ARCH}" --libc=musl download-toolchain
+          go run ./cmd/build-naive --target="linux/${TARGET_ARCH}" --libc=musl env >> "$GITHUB_ENV"
+
+      - name: Build static binary
+        env:
+          CGO_ENABLED: "1"
+          GOOS: linux
+          GOARCH: ${{ matrix.go_arch }}
+        run: |
+          set -xeuo pipefail
+          tags="$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_naive_outbound,with_musl"
+          ldflags="$(cat release/LDFLAGS)"
+          mkdir -p dist
+          go build -v -trimpath \
+            -o dist/mbox \
+            -tags "$tags" \
+            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${TRAFFIC_VERSION}' ${ldflags} -s -w -buildid=" \
+            ./cmd/sing-box
+          if readelf -l dist/mbox | grep "Requesting program interpreter" >/dev/null; then
+            echo "The Debian package binary is dynamically linked."
+            exit 1
+          fi
+
+      - name: Package Debian archive
+        env:
+          DEBIAN_ARCH: ${{ matrix.debian_arch }}
+        run: |
+          set -xeuo pipefail
+          sudo gem install fpm
+          cp .fpm_systemd .fpm
+          package_name="mbox-traffic-statistics_linux_${DEBIAN_ARCH}.deb"
+          package_path="dist/${package_name}"
+          fpm -t deb \
+            -v "$TRAFFIC_VERSION" \
+            -p "$package_path" \
+            --architecture "$DEBIAN_ARCH" \
+            dist/mbox=/usr/bin/mbox
+          dpkg-deb --info "$package_path"
+          dpkg-deb --contents "$package_path" | grep "./usr/bin/mbox" >/dev/null
+          (
+            cd dist
+            sha256sum "$package_name" > "${package_name}.sha256"
+          )
+          rm dist/mbox
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: mbox-traffic-statistics-linux-${{ matrix.debian_arch }}
+          path: |
+            dist/*.deb
+            dist/*.sha256
+
+  publish:
+    name: Update rolling release
+    if: github.ref == 'refs/heads/traffic-statistics'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs:
+      - build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Download packages
+        uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish traffic-statistics release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git tag --force traffic-statistics-latest "$GITHUB_SHA"
+          git push origin refs/tags/traffic-statistics-latest --force
+
+          if gh release view traffic-statistics-latest >/dev/null 2>&1; then
+            for legacy_asset in \
+              mbox-traffic-statistics_linux_amd64.tar.gz \
+              mbox-traffic-statistics_linux_amd64.tar.gz.sha256 \
+              mbox-traffic-statistics_linux_arm64.tar.gz \
+              mbox-traffic-statistics_linux_arm64.tar.gz.sha256 \
+              sing-box-traffic-statistics_linux_amd64.tar.gz \
+              sing-box-traffic-statistics_linux_amd64.tar.gz.sha256 \
+              sing-box-traffic-statistics_linux_arm64.tar.gz \
+              sing-box-traffic-statistics_linux_arm64.tar.gz.sha256
+            do
+              gh release delete-asset traffic-statistics-latest "$legacy_asset" --yes 2>/dev/null || true
+            done
+            gh release upload traffic-statistics-latest dist/* --clobber
+            gh release edit traffic-statistics-latest \
+              --title "mbox traffic statistics build" \
+              --notes "Rolling Debian amd64/arm64 packages from the traffic-statistics branch." \
+              --prerelease
+          else
+            gh release create traffic-statistics-latest dist/* \
+              --title "mbox traffic statistics build" \
+              --notes "Rolling Debian amd64/arm64 packages from the traffic-statistics branch." \
+              --prerelease
+          fi
