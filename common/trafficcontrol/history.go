@@ -34,9 +34,13 @@ const (
 	historyRevisionSize    = 16
 
 	HistoryGroupByRoutePath         = "route_path"
+	HistoryGroupByDestination       = "destination"
 	HistoryGroupByDestinationDomain = "destination_domain"
 	HistoryGroupByOutboundGroup     = "outbound_group"
 	HistoryGroupByActualOutbound    = "actual_outbound"
+
+	HistoryDestinationTypeDomain = "domain"
+	HistoryDestinationTypeIP     = "ip"
 
 	HistorySortByName          = "name"
 	HistorySortByTotalBytes    = "total_bytes"
@@ -49,11 +53,12 @@ const (
 )
 
 var (
-	historyBucket            = []byte("traffic_statistics_v1")
-	historyTargetsBucket     = []byte("traffic_statistics_targets_v1")
-	historyMetadataBucket    = []byte("traffic_statistics_metadata_v1")
-	historyConfigRevisionKey = []byte("config_revision_hmac_key")
-	historyTargetsFromKey    = []byte("target_available_from")
+	historyBucket              = []byte("traffic_statistics_v1")
+	historyTargetsBucket       = []byte("traffic_statistics_targets_v1")
+	historyMetadataBucket      = []byte("traffic_statistics_metadata_v1")
+	historyConfigRevisionKey   = []byte("config_revision_hmac_key")
+	historyTargetsFromKey      = []byte("target_available_from")
+	historyDestinationsFromKey = []byte("destination_available_from")
 )
 
 type HistoryOptions struct {
@@ -67,6 +72,7 @@ type HistoryQuery struct {
 	RouteTags          []string
 	GroupTags          []string
 	ActualOutboundTags []string
+	Destinations       []string
 	DestinationDomains []string
 	Networks           []string
 	GroupBy            string
@@ -81,6 +87,8 @@ type HistoryRow struct {
 	ConfigRevision     string
 	RouteTag           string
 	GroupPath          []string
+	Destination        string
+	DestinationType    string
 	DestinationDomain  string
 	OutboundGroup      string
 	ActualOutboundTag  string
@@ -92,15 +100,16 @@ type HistoryRow struct {
 }
 
 type HistoryQueryResult struct {
-	TargetAvailableFrom time.Time
-	ActualFrom          time.Time
-	ActualTo            time.Time
-	GroupBy             string
-	Page                int
-	PageSize            int
-	TotalRows           int
-	Totals              HistoryCounters
-	Rows                []HistoryRow
+	TargetAvailableFrom      time.Time
+	DestinationAvailableFrom time.Time
+	ActualFrom               time.Time
+	ActualTo                 time.Time
+	GroupBy                  string
+	Page                     int
+	PageSize                 int
+	TotalRows                int
+	Totals                   HistoryCounters
+	Rows                     []HistoryRow
 }
 
 type HistoryCounters struct {
@@ -115,6 +124,7 @@ type historyKey struct {
 	RouteTag           string
 	GroupPath          string
 	DestinationDomain  string `json:",omitempty"`
+	DestinationIP      string `json:",omitempty"`
 	ActualOutboundTag  string
 	ActualOutboundType string
 	Network            string
@@ -130,6 +140,8 @@ type historyDimensions struct {
 	ConfigRevision     string
 	RouteTag           string
 	GroupPath          string
+	Destination        string
+	DestinationType    string
 	DestinationDomain  string
 	OutboundGroup      string
 	ActualOutboundTag  string
@@ -143,6 +155,7 @@ type historyRecord struct {
 	RouteTag           string `json:"route_tag"`
 	GroupPath          string `json:"group_path"`
 	DestinationDomain  string `json:"destination_domain,omitempty"`
+	DestinationIP      string `json:"destination_ip,omitempty"`
 	ActualOutboundTag  string `json:"actual_outbound_tag"`
 	ActualOutboundType string `json:"actual_outbound_type"`
 	Network            string `json:"network"`
@@ -152,12 +165,13 @@ type historyRecord struct {
 var _ adapter.LifecycleService = (*History)(nil)
 
 type History struct {
-	ctx            context.Context
-	logger         log.ContextLogger
-	path           string
-	configContent  []byte
-	configRevision string
-	targetsFrom    time.Time
+	ctx              context.Context
+	logger           log.ContextLogger
+	path             string
+	configContent    []byte
+	configRevision   string
+	targetsFrom      time.Time
+	destinationsFrom time.Time
 
 	databaseAccess sync.RWMutex
 	flushAccess    sync.Mutex
@@ -253,17 +267,46 @@ func (h *History) initializeTargetsFrom() error {
 		if err != nil {
 			return err
 		}
-		content := bucket.Get(historyTargetsFromKey)
-		if len(content) == 0 {
-			h.targetsFrom = time.Now().UTC().Truncate(HistoryBucketInterval).Add(HistoryBucketInterval)
-			return bucket.Put(historyTargetsFromKey, historyBucketKeyPrefix(h.targetsFrom.Unix()))
+		collectionFrom := time.Now().UTC().Truncate(HistoryBucketInterval).Add(HistoryBucketInterval)
+		h.targetsFrom, err = initializeHistoryAvailability(
+			bucket,
+			historyTargetsFromKey,
+			collectionFrom,
+			"target",
+		)
+		if err != nil {
+			return err
 		}
-		if len(content) != 8 {
-			return errors.New("invalid traffic statistics target availability time")
+		destinationCollectionFrom := collectionFrom
+		if h.targetsFrom.After(destinationCollectionFrom) {
+			destinationCollectionFrom = h.targetsFrom
 		}
-		h.targetsFrom = time.Unix(int64(binary.BigEndian.Uint64(content)), 0).UTC()
+		h.destinationsFrom, err = initializeHistoryAvailability(
+			bucket,
+			historyDestinationsFromKey,
+			destinationCollectionFrom,
+			"destination",
+		)
+		if err != nil {
+			return err
+		}
+		if h.destinationsFrom.Before(h.targetsFrom) {
+			return errors.New("invalid traffic statistics destination availability time")
+		}
 		return nil
 	})
+}
+
+func initializeHistoryAvailability(bucket *bbolt.Bucket, key []byte, fallback time.Time, name string) (time.Time, error) {
+	content := bucket.Get(key)
+	if len(content) == 0 {
+		err := bucket.Put(key, historyBucketKeyPrefix(fallback.Unix()))
+		return fallback, err
+	}
+	if len(content) != 8 {
+		return time.Time{}, errors.New("invalid traffic statistics " + name + " availability time")
+	}
+	return time.Unix(int64(binary.BigEndian.Uint64(content)), 0).UTC(), nil
 }
 
 func (h *History) TargetAvailableFrom() time.Time {
@@ -279,6 +322,21 @@ func (h *History) targetAvailableFromAt(now time.Time) time.Time {
 		return retentionStart
 	}
 	return h.targetsFrom
+}
+
+func (h *History) DestinationAvailableFrom() time.Time {
+	return h.destinationAvailableFromAt(time.Now())
+}
+
+func (h *History) destinationAvailableFromAt(now time.Time) time.Time {
+	if h.destinationsFrom.IsZero() {
+		return time.Time{}
+	}
+	retentionStart := now.Add(-HistoryRetention).UTC().Truncate(HistoryBucketInterval)
+	if h.destinationsFrom.Before(retentionStart) {
+		return retentionStart
+	}
+	return h.destinationsFrom
 }
 
 func (h *History) initializeConfigRevision() error {
@@ -397,12 +455,18 @@ func (h *History) RecordDelta(metadata *TrackerMetadata, uplink int64, downlink 
 		groupPath = []string{}
 	}
 	groupPathContent, _ := json.Marshal(groupPath)
+	destinationDomain := normalizeDestinationDomain(metadata.DestinationDomain)
+	var destinationIP string
+	if destinationDomain == "" {
+		destinationIP = normalizeDestinationIP(metadata.DestinationIP)
+	}
 	key := historyKey{
 		Bucket:             time.Now().UTC().Truncate(HistoryBucketInterval).Unix(),
 		ConfigRevision:     h.configRevision,
 		RouteTag:           routeTag,
 		GroupPath:          string(groupPathContent),
-		DestinationDomain:  normalizeDestinationDomain(metadata.DestinationDomain),
+		DestinationDomain:  destinationDomain,
+		DestinationIP:      destinationIP,
 		ActualOutboundTag:  actualOutboundTag,
 		ActualOutboundType: actualOutboundType,
 		Network:            metadata.Metadata.Network,
@@ -457,6 +521,7 @@ func (h *History) flushLocked(restoreOnError bool) error {
 		for key, delta := range pending {
 			summaryKey := key
 			summaryKey.DestinationDomain = ""
+			summaryKey.DestinationIP = ""
 			err = putHistoryDelta(summaryBucket, summaryKey, delta)
 			if err != nil {
 				return err
@@ -560,18 +625,27 @@ func (h *History) Query(ctx context.Context, query HistoryQuery) (HistoryQueryRe
 	h.flushAccess.Unlock()
 	defer tx.Rollback()
 	targetAvailableFrom := h.targetAvailableFromAt(time.Now())
+	destinationAvailableFrom := h.destinationAvailableFromAt(time.Now())
 
 	routeTags := filterSet(query.RouteTags)
 	groupTags := filterSet(query.GroupTags)
 	actualOutboundTags := filterSet(query.ActualOutboundTags)
+	destinations := filterSet(query.Destinations)
 	destinationDomains := filterSet(query.DestinationDomains)
 	networks := filterSet(query.Networks)
-	useTargets := query.GroupBy == HistoryGroupByDestinationDomain || len(query.DestinationDomains) > 0
+	useDestinations := query.GroupBy == HistoryGroupByDestination || len(query.Destinations) > 0
+	useTargets := useDestinations ||
+		query.GroupBy == HistoryGroupByDestinationDomain ||
+		len(query.DestinationDomains) > 0
+	detailAvailableFrom := targetAvailableFrom
+	if useDestinations {
+		detailAvailableFrom = destinationAvailableFrom
+	}
 	rows := make(map[historyDimensions]historyAggregate)
 	merge := func(record historyRecord) error {
 		bucketStart := time.Unix(record.Bucket, 0).UTC()
 		bucketEnd := bucketStart.Add(HistoryBucketInterval)
-		if useTargets && bucketStart.Before(targetAvailableFrom) {
+		if useTargets && bucketStart.Before(detailAvailableFrom) {
 			return nil
 		}
 		if !query.From.IsZero() && !bucketEnd.After(query.From) {
@@ -590,15 +664,25 @@ func (h *History) Query(ctx context.Context, query HistoryQuery) (HistoryQueryRe
 		}
 		outboundGroup := lastGroupTag(groupPath)
 		destinationDomain := normalizeDestinationDomain(record.DestinationDomain)
+		destination, destinationType := preferredDestination(destinationDomain, record.DestinationIP)
 		if !matchesFilterSet(record.RouteTag, routeTags) ||
 			!matchesFilterSet(outboundGroup, groupTags) ||
 			!matchesFilterSet(record.ActualOutboundTag, actualOutboundTags) ||
+			!matchesFilterSet(destination, destinations) ||
 			!matchesFilterSet(destinationDomain, destinationDomains) ||
 			!matchesFilterSet(record.Network, networks) {
 			return nil
 		}
 
-		dimensions, row := aggregateHistoryRecord(query.GroupBy, record, groupPath, destinationDomain, outboundGroup)
+		dimensions, row := aggregateHistoryRecord(
+			query.GroupBy,
+			record,
+			groupPath,
+			destination,
+			destinationType,
+			destinationDomain,
+			outboundGroup,
+		)
 		aggregate, loaded := rows[dimensions]
 		if !loaded {
 			aggregate.Row = row
@@ -630,8 +714,8 @@ func (h *History) Query(ctx context.Context, query HistoryQuery) (HistoryQueryRe
 		cursor := bucket.Cursor()
 		var key, content []byte
 		scanFrom := query.From
-		if useTargets && (scanFrom.IsZero() || targetAvailableFrom.After(scanFrom)) {
-			scanFrom = targetAvailableFrom
+		if useTargets && (scanFrom.IsZero() || detailAvailableFrom.After(scanFrom)) {
+			scanFrom = detailAvailableFrom
 		}
 		if scanFrom.IsZero() || scanFrom.Unix() < 0 {
 			key, content = cursor.First()
@@ -671,12 +755,13 @@ func (h *History) Query(ctx context.Context, query HistoryQuery) (HistoryQueryRe
 			}
 		}
 		scanned++
-		if useTargets && key.Bucket < targetAvailableFrom.Unix() {
+		if useTargets && key.Bucket < detailAvailableFrom.Unix() {
 			continue
 		}
 		record := historyRecordFrom(key, counters)
 		if !useTargets {
 			record.DestinationDomain = ""
+			record.DestinationIP = ""
 		}
 		err = merge(record)
 		if err != nil {
@@ -733,15 +818,16 @@ func (h *History) Query(ctx context.Context, query HistoryQuery) (HistoryQueryRe
 		resultRows = resultRows[pageStart:pageEnd]
 	}
 	return HistoryQueryResult{
-		TargetAvailableFrom: targetAvailableFrom,
-		ActualFrom:          actualFrom,
-		ActualTo:            actualTo,
-		GroupBy:             query.GroupBy,
-		Page:                query.Page,
-		PageSize:            query.PageSize,
-		TotalRows:           totalRows,
-		Totals:              totals,
-		Rows:                resultRows,
+		TargetAvailableFrom:      targetAvailableFrom,
+		DestinationAvailableFrom: destinationAvailableFrom,
+		ActualFrom:               actualFrom,
+		ActualTo:                 actualTo,
+		GroupBy:                  query.GroupBy,
+		Page:                     query.Page,
+		PageSize:                 query.PageSize,
+		TotalRows:                totalRows,
+		Totals:                   totals,
+		Rows:                     resultRows,
 	}, nil
 }
 
@@ -754,6 +840,7 @@ func normalizeHistoryQuery(query HistoryQuery) (HistoryQuery, error) {
 	}
 	switch query.GroupBy {
 	case HistoryGroupByRoutePath,
+		HistoryGroupByDestination,
 		HistoryGroupByDestinationDomain,
 		HistoryGroupByOutboundGroup,
 		HistoryGroupByActualOutbound:
@@ -797,6 +884,14 @@ func normalizeHistoryQuery(query HistoryQuery) (HistoryQuery, error) {
 			return HistoryQuery{}, errors.New("network must be tcp or udp")
 		}
 	}
+	query.Destinations = append([]string(nil), query.Destinations...)
+	for index, destination := range query.Destinations {
+		normalized, _ := normalizeDestination(destination)
+		if destination != "" && normalized == "" {
+			return HistoryQuery{}, errors.New("invalid destination")
+		}
+		query.Destinations[index] = normalized
+	}
 	query.DestinationDomains = append([]string(nil), query.DestinationDomains...)
 	for index, domain := range query.DestinationDomains {
 		normalized := normalizeDestinationDomain(domain)
@@ -808,20 +903,61 @@ func normalizeHistoryQuery(query HistoryQuery) (HistoryQuery, error) {
 	return query, nil
 }
 
+func normalizeDestination(destination string) (string, string) {
+	if domain := normalizeDestinationDomain(destination); domain != "" {
+		return domain, HistoryDestinationTypeDomain
+	}
+	if address := normalizeDestinationIP(destination); address != "" {
+		return address, HistoryDestinationTypeIP
+	}
+	return "", ""
+}
+
+func preferredDestination(domain string, address string) (string, string) {
+	if domain = normalizeDestinationDomain(domain); domain != "" {
+		return domain, HistoryDestinationTypeDomain
+	}
+	if address = normalizeDestinationIP(address); address != "" {
+		return address, HistoryDestinationTypeIP
+	}
+	return "", ""
+}
+
+func destinationTypeForDomain(domain string) string {
+	if domain == "" {
+		return ""
+	}
+	return HistoryDestinationTypeDomain
+}
+
 func aggregateHistoryRecord(
 	groupBy string,
 	record historyRecord,
 	groupPath []string,
+	destination string,
+	destinationType string,
 	destinationDomain string,
 	outboundGroup string,
 ) (historyDimensions, HistoryRow) {
 	emptyPath := []string{}
 	switch groupBy {
+	case HistoryGroupByDestination:
+		return historyDimensions{
+				Destination:     destination,
+				DestinationType: destinationType,
+			}, HistoryRow{
+				GroupPath:         emptyPath,
+				Destination:       destination,
+				DestinationType:   destinationType,
+				DestinationDomain: destinationDomain,
+			}
 	case HistoryGroupByDestinationDomain:
 		return historyDimensions{
 				DestinationDomain: destinationDomain,
 			}, HistoryRow{
 				GroupPath:         emptyPath,
+				Destination:       destinationDomain,
+				DestinationType:   destinationTypeForDomain(destinationDomain),
 				DestinationDomain: destinationDomain,
 			}
 	case HistoryGroupByOutboundGroup:
@@ -869,6 +1005,8 @@ func lastGroupTag(groupPath []string) string {
 
 func historyRowLabel(groupBy string, row HistoryRow) string {
 	switch groupBy {
+	case HistoryGroupByDestination:
+		return row.Destination
 	case HistoryGroupByDestinationDomain:
 		return row.DestinationDomain
 	case HistoryGroupByOutboundGroup:
@@ -930,6 +1068,8 @@ func compareHistoryRowsCanonical(groupBy string, left HistoryRow, right HistoryR
 		return order
 	}
 	for _, values := range [][2]string{
+		{left.Destination, right.Destination},
+		{left.DestinationType, right.DestinationType},
 		{left.DestinationDomain, right.DestinationDomain},
 		{left.OutboundGroup, right.OutboundGroup},
 		{left.ActualOutboundTag, right.ActualOutboundTag},
@@ -1006,6 +1146,7 @@ func historyRecordFrom(key historyKey, counters historyCounters) historyRecord {
 		RouteTag:           key.RouteTag,
 		GroupPath:          key.GroupPath,
 		DestinationDomain:  key.DestinationDomain,
+		DestinationIP:      key.DestinationIP,
 		ActualOutboundTag:  key.ActualOutboundTag,
 		ActualOutboundType: key.ActualOutboundType,
 		Network:            key.Network,

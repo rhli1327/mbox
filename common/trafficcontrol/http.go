@@ -18,16 +18,17 @@ const (
 )
 
 type capabilitiesResponse struct {
-	APIVersion          string              `json:"api_version"`
-	MetricScope         string              `json:"metric_scope"`
-	Features            capabilitiesFeature `json:"features"`
-	Dimensions          []string            `json:"dimensions"`
-	Groupings           []string            `json:"groupings"`
-	SortFields          []string            `json:"sort_fields"`
-	MaxPageSize         int                 `json:"max_page_size"`
-	BucketSeconds       int64               `json:"bucket_seconds"`
-	RetentionSeconds    int64               `json:"retention_seconds"`
-	TargetAvailableFrom string              `json:"target_available_from"`
+	APIVersion               string              `json:"api_version"`
+	MetricScope              string              `json:"metric_scope"`
+	Features                 capabilitiesFeature `json:"features"`
+	Dimensions               []string            `json:"dimensions"`
+	Groupings                []string            `json:"groupings"`
+	SortFields               []string            `json:"sort_fields"`
+	MaxPageSize              int                 `json:"max_page_size"`
+	BucketSeconds            int64               `json:"bucket_seconds"`
+	RetentionSeconds         int64               `json:"retention_seconds"`
+	TargetAvailableFrom      string              `json:"target_available_from"`
+	DestinationAvailableFrom string              `json:"destination_available_from"`
 }
 
 type capabilitiesFeature struct {
@@ -45,6 +46,7 @@ type queryRequest struct {
 	RouteTags          []string `json:"route_tags,omitempty"`
 	GroupTags          []string `json:"group_tags,omitempty"`
 	ActualOutboundTags []string `json:"actual_outbound_tags,omitempty"`
+	Destinations       []string `json:"destinations,omitempty"`
 	DestinationDomains []string `json:"destination_domains,omitempty"`
 	Networks           []string `json:"networks,omitempty"`
 	GroupBy            string   `json:"group_by,omitempty"`
@@ -56,15 +58,16 @@ type queryRequest struct {
 }
 
 type queryResponse struct {
-	GroupBy             string              `json:"group_by"`
-	Page                int                 `json:"page"`
-	PageSize            int                 `json:"page_size"`
-	TotalRows           int                 `json:"total_rows"`
-	TargetAvailableFrom string              `json:"target_available_from"`
-	ActualFrom          string              `json:"actual_from"`
-	ActualTo            string              `json:"actual_to"`
-	Totals              queryResponseTotals `json:"totals"`
-	Rows                []queryResponseRow  `json:"rows"`
+	GroupBy                  string              `json:"group_by"`
+	Page                     int                 `json:"page"`
+	PageSize                 int                 `json:"page_size"`
+	TotalRows                int                 `json:"total_rows"`
+	TargetAvailableFrom      string              `json:"target_available_from"`
+	DestinationAvailableFrom string              `json:"destination_available_from"`
+	ActualFrom               string              `json:"actual_from"`
+	ActualTo                 string              `json:"actual_to"`
+	Totals                   queryResponseTotals `json:"totals"`
+	Rows                     []queryResponseRow  `json:"rows"`
 }
 
 type queryResponseTotals struct {
@@ -77,6 +80,8 @@ type queryResponseRow struct {
 	ConfigRevision     string   `json:"config_revision"`
 	RouteTag           string   `json:"route_tag"`
 	GroupPath          []string `json:"group_path"`
+	Destination        string   `json:"destination"`
+	DestinationType    string   `json:"destination_type"`
 	DestinationDomain  string   `json:"destination_domain"`
 	OutboundGroup      string   `json:"outbound_group"`
 	ActualOutboundTag  string   `json:"actual_outbound_tag"`
@@ -105,6 +110,8 @@ func NewHistoryHTTPHandler(history *History) http.Handler {
 				"config_revision",
 				"route_tag",
 				"group_path",
+				"destination",
+				"destination_type",
 				"destination_domain",
 				"outbound_group",
 				"actual_outbound_tag",
@@ -113,6 +120,7 @@ func NewHistoryHTTPHandler(history *History) http.Handler {
 			},
 			Groupings: []string{
 				HistoryGroupByRoutePath,
+				HistoryGroupByDestination,
 				HistoryGroupByDestinationDomain,
 				HistoryGroupByOutboundGroup,
 				HistoryGroupByActualOutbound,
@@ -124,10 +132,11 @@ func NewHistoryHTTPHandler(history *History) http.Handler {
 				HistorySortByDownlinkBytes,
 				HistorySortByConnections,
 			},
-			MaxPageSize:         HistoryPageSizeMax,
-			BucketSeconds:       int64(HistoryBucketInterval / time.Second),
-			RetentionSeconds:    int64(HistoryRetention / time.Second),
-			TargetAvailableFrom: formatOptionalTime(history.TargetAvailableFrom()),
+			MaxPageSize:              HistoryPageSizeMax,
+			BucketSeconds:            int64(HistoryBucketInterval / time.Second),
+			RetentionSeconds:         int64(HistoryRetention / time.Second),
+			TargetAvailableFrom:      formatOptionalTime(history.TargetAvailableFrom()),
+			DestinationAvailableFrom: formatOptionalTime(history.DestinationAvailableFrom()),
 		})
 	})
 	mux.HandleFunc("POST /query", func(writer http.ResponseWriter, request *http.Request) {
@@ -156,6 +165,7 @@ func NewHistoryHTTPHandler(history *History) http.Handler {
 			RouteTags:          body.RouteTags,
 			GroupTags:          body.GroupTags,
 			ActualOutboundTags: body.ActualOutboundTags,
+			Destinations:       body.Destinations,
 			DestinationDomains: body.DestinationDomains,
 			Networks:           body.Networks,
 			GroupBy:            body.GroupBy,
@@ -198,12 +208,13 @@ func NewHistoryHTTPHandler(history *History) http.Handler {
 			return
 		}
 		response := queryResponse{
-			GroupBy:             result.GroupBy,
-			Page:                result.Page,
-			PageSize:            result.PageSize,
-			TotalRows:           result.TotalRows,
-			TargetAvailableFrom: formatOptionalTime(result.TargetAvailableFrom),
-			Rows:                make([]queryResponseRow, 0, len(result.Rows)),
+			GroupBy:                  result.GroupBy,
+			Page:                     result.Page,
+			PageSize:                 result.PageSize,
+			TotalRows:                result.TotalRows,
+			TargetAvailableFrom:      formatOptionalTime(result.TargetAvailableFrom),
+			DestinationAvailableFrom: formatOptionalTime(result.DestinationAvailableFrom),
+			Rows:                     make([]queryResponseRow, 0, len(result.Rows)),
 			Totals: queryResponseTotals{
 				UplinkBytes:   strconv.FormatUint(result.Totals.UplinkBytes, 10),
 				DownlinkBytes: strconv.FormatUint(result.Totals.DownlinkBytes, 10),
@@ -219,6 +230,8 @@ func NewHistoryHTTPHandler(history *History) http.Handler {
 				ConfigRevision:     row.ConfigRevision,
 				RouteTag:           row.RouteTag,
 				GroupPath:          row.GroupPath,
+				Destination:        row.Destination,
+				DestinationType:    row.DestinationType,
 				DestinationDomain:  row.DestinationDomain,
 				OutboundGroup:      row.OutboundGroup,
 				ActualOutboundTag:  row.ActualOutboundTag,
@@ -255,6 +268,7 @@ func validateQueryRequest(request queryRequest) error {
 		request.RouteTags,
 		request.GroupTags,
 		request.ActualOutboundTags,
+		request.Destinations,
 		request.DestinationDomains,
 		request.Networks,
 	} {
@@ -274,6 +288,7 @@ func validateQueryRequest(request queryRequest) error {
 		SortBy:             request.SortBy,
 		SortOrder:          request.SortOrder,
 		Networks:           request.Networks,
+		Destinations:       request.Destinations,
 		DestinationDomains: request.DestinationDomains,
 	})
 	return err

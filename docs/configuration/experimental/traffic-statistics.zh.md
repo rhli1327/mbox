@@ -54,15 +54,27 @@ Bolt 事务还会将其写入 target detail bucket：
 
 - 低基数 summary bucket 保存路由路径、节点组、叶子出站、网络与配置 revision。
   旧数据库已经包含该 bucket，因此非域名汇总仍能包含升级前的历史。
-- target detail bucket 在相同维度之外保存 `destination_domain`。它从支持域名
-  的构建首次打开数据库后的下一个完整分钟边界开始记录，并有意排除升级所在的
-  不完整分钟。`target_available_from` 取该完整采集边界与当前保留期边界两者中
-  较晚的时间。
+- target detail bucket 在相同维度之外保存纯 `destination_domain`，当前构建
+  还会保存作为 fallback 的目标 IP。域名明细从支持域名的构建首次打开数据库后
+  的下一个完整分钟边界开始记录，并有意排除升级所在的不完整分钟。
+  `target_available_from` 取该域名明细边界与当前保留期边界两者中较晚的时间。
 
 系统不会把升级前仅存在于 summary 的流量伪造成空域名或“未知域名”。因此，按
 域名聚合以及任何带 `destination_domains` 过滤的查询只覆盖 target detail
 可用时段。在该时段内，空 `destination_domain` 表示路由时没有可用的有效逻辑
-域名，例如纯 IP 连接；这样该时段内的已知域名与未知域名总量仍可核对。
+域名，其中也包括纯 IP 连接。
+
+通用的 `destination` 维度晚于纯域名明细引入。旧数据库中空域名记录所对应的
+IP 无法恢复，因此系统不会把这些旧记录伪造成完整目标数据。
+`destination_available_from` 表示开始完整采集“域名或 IP”目标的第一个完整
+分钟，并同样受当前保留期边界约束。按 `destination` 聚合以及任何带
+`destinations` 的查询只覆盖这个较晚的时段。新建数据库通常会把两个可用边界
+初始化为同一分钟。
+
+同一数据库的目标完整性边界假设统计构建只做单向升级。若临时降级到不写
+fallback IP 的旧构建后再升级，系统无法区分降级期间的缺失 IP 与真正未知目标，
+已有的 `destination_available_from` 将不再可靠。此时应恢复升级前的数据库
+备份，或使用新的流量数据库重新建立完整性边界。
 
 待写计数会在 5 秒 tick 到达时以及正常关闭时落盘。异常退出可能丢失最近尚未
 采样及尚未落盘的增量（按当前实现约两个 tick）。长连接增量归入采样时刻所在的
@@ -99,15 +111,18 @@ Bolt 事务还会将其写入 target detail bucket：
 | `actual_outbound_tag` | 针对该网络实际选择并分派的叶子出站标签。 |
 | `actual_outbound_type` | 叶子出站类型。按 `actual_outbound` 聚合时，若同一 tag 在查询范围内对应多种类型，则为空字符串。 |
 | `network` | `tcp` 或 `udp`。 |
-| `destination_domain` | 路由完成并交给 outbound 时冻结的最佳有效逻辑目标域名。优先取有效的 `Destination.Fqdn`，否则取有效的嗅探或反向映射 `Metadata.Domain`；统一转小写并去掉尾点。无效名称和纯 IP 目标为空。它不是代理节点服务器域名。 |
+| `destination` | 路由完成并交给 outbound 时冻结的首选逻辑目标：有有效逻辑域名时使用域名，否则使用 `Destination.Addr`。域名转为小写并去掉一个尾点；IP 使用规范文本，IPv4-mapped IPv6 会还原为 IPv4，IPv6 zone 会移除。它既不是代理节点服务器地址，也不是域名解析后实际拨号的 IP。 |
+| `destination_type` | 与 `destination` 对应的 `domain` 或 `ip`；两者都不可用时为空。 |
+| `destination_domain` | 为兼容保留的纯域名维度。优先取有效的 `Destination.Fqdn`，否则取有效的嗅探或反向映射 `Metadata.Domain`。无效名称和纯 IP 目标为空，绝不会在该字段中放入 IP。 |
 | `connections` | 已解析的 TCP 流或 UDP 数据包会话数。已解析但没有字节的分派仍计为一次。 |
 
 v2 查询支持以下 `group_by`：
 
 | 值 | 聚合语义 |
 |----|----------|
-| `route_path` | 保留完整 summary 维度（`config_revision`、路由路径、叶子 tag/type 与网络），折叠 `destination_domain`。这是默认值。 |
-| `destination_domain` | 只按规范化目标域名聚合，跨配置 revision、网络、路由、组和节点汇总。 |
+| `route_path` | 保留完整 summary 维度（`config_revision`、路由路径、叶子 tag/type 与网络），折叠目标维度。这是默认值。 |
+| `destination` | 只按首选的规范化域名或 IP 目标聚合，跨配置 revision、网络、路由、组和节点汇总。新版目标视图应使用该聚合。 |
+| `destination_domain` | 为兼容保留的纯域名聚合；纯 IP 与其他无域名流量会进入同一个空域名行。 |
 | `outbound_group` | 只按最内层/叶子父组标签聚合，跨 revision 与网络汇总。 |
 | `actual_outbound` | 只按叶子出站 tag 聚合，跨 revision 与网络汇总。 |
 
@@ -120,7 +135,7 @@ v2 查询支持以下 `group_by`：
 
 | 资源 | 方法 | 用途 |
 |------|------|------|
-| `/mbox/v2/traffic/capabilities` | `GET` | 获取维度、聚合方式、排序字段、存储参数与域名明细可用时间。 |
+| `/mbox/v2/traffic/capabilities` | `GET` | 获取维度、聚合方式、排序字段、存储参数以及域名/目标明细可用时间。 |
 | `/mbox/v2/traffic/query` | `POST` | 过滤、聚合、搜索、排序并分页查询汇总行。 |
 
 当前构建只挂载 v2 路径，不保留不兼容的 v1 端点。
@@ -134,8 +149,8 @@ v2 查询支持以下 `group_by`：
 
 !!! warning
 
-    流量历史，特别是目标域名，属于敏感信息。监听器 secret 为空时，应只监听
-    回环地址或可信私网。
+    流量历史，特别是目标域名与 IP，属于敏感信息。监听器 secret 为空时，应只
+    监听回环地址或可信私网。
 
 capabilities 响应示例：
 
@@ -155,6 +170,8 @@ capabilities 响应示例：
     "config_revision",
     "route_tag",
     "group_path",
+    "destination",
+    "destination_type",
     "destination_domain",
     "outbound_group",
     "actual_outbound_tag",
@@ -163,6 +180,7 @@ capabilities 响应示例：
   ],
   "groupings": [
     "route_path",
+    "destination",
     "destination_domain",
     "outbound_group",
     "actual_outbound"
@@ -177,12 +195,15 @@ capabilities 响应示例：
   "max_page_size": 200,
   "bucket_seconds": 60,
   "retention_seconds": 2592000,
-  "target_available_from": "2026-07-25T12:00:00Z"
+  "target_available_from": "2026-07-25T12:00:00Z",
+  "destination_available_from": "2026-07-25T15:00:00Z"
 }
 ```
 
 历史存储尚未初始化时，`target_available_from` 为空字符串。最初的域名采集
 起点超出保留期后，该值会随保留期窗口向前移动。
+`destination_available_from` 对完整的“域名或 IP”明细遵循同样规则；升级
+已有数据库时，它可能晚于 `target_available_from`。
 
 ### 查询
 
@@ -190,11 +211,11 @@ capabilities 响应示例：
 {
   "from": "2026-07-25T00:00:00Z",
   "to": "2026-07-26T00:00:00Z",
-  "group_by": "destination_domain",
+  "group_by": "destination",
   "route_tags": ["AI"],
   "group_tags": ["AI-Auto"],
   "actual_outbound_tags": ["ai-node"],
-  "destination_domains": ["api.openai.com"],
+  "destinations": ["api.openai.com", "192.0.2.1"],
   "networks": ["tcp", "udp"],
   "search": "openai",
   "sort_by": "total_bytes",
@@ -205,14 +226,17 @@ capabilities 响应示例：
 ```
 
 `from` 与 `to` 是可选的 RFC 3339 时间戳，同时存在时必须满足 `from < to`。
-五个列表过滤字段都是精确匹配允许列表，并按 AND 组合。`group_tags` 匹配
-`outbound_group`，不会匹配 `group_path` 中的每一级祖先。域名过滤值会按存储
-域名的规则规范化；空字符串显式选择 target 可用时段内没有域名的流量。每个过滤
-字段最多接受 256 个值，每个值最多 1024 个 UTF-8 字节；`networks` 只接受
-`tcp` 与 `udp`。
+六个列表过滤字段都是精确匹配允许列表；同一过滤字段内按 OR 组合，不同维度之间
+按 AND 组合。`group_tags` 匹配 `outbound_group`，不会匹配 `group_path` 中的
+每一级祖先。`destinations` 接受规范化域名或 IP，IPv4 与 IPv6 输入都会转为
+规范形式；空字符串显式选择既没有有效域名、也没有有效 fallback IP 的流量。
+`destination_domains` 保持纯域名语义，其空字符串会选择没有有效域名的流量，
+其中包括已知的纯 IP 流量。每个过滤字段最多接受 256 个值，每个值最多 1024 个
+UTF-8 字节；`networks` 只接受 `tcp` 与 `udp`。
 
 `search` 对当前聚合标签执行不区分大小写的子串匹配：分别是页面显示的路由路径、
-目标域名、节点组或叶子出站 tag。搜索在聚合之后、计算 totals 与分页之前执行。
+首选目标、兼容域名、节点组或叶子出站 tag。搜索在聚合之后、计算 totals 与
+分页之前执行。
 
 服务端依次执行过滤、聚合、搜索、稳定排序，最后才分页。`sort_by` 接受
 capabilities 声明的字段，`sort_order` 为 `asc` 或 `desc`。默认按
@@ -227,12 +251,13 @@ capabilities 声明的字段，`sort_order` 为 `asc` 或 `desc`。默认按
 
 ```json
 {
-  "group_by": "destination_domain",
+  "group_by": "destination",
   "page": 1,
   "page_size": 50,
   "total_rows": 1,
   "target_available_from": "2026-07-25T12:00:00Z",
-  "actual_from": "2026-07-25T12:00:00Z",
+  "destination_available_from": "2026-07-25T15:00:00Z",
+  "actual_from": "2026-07-25T15:00:00Z",
   "actual_to": "2026-07-26T00:00:00Z",
   "totals": {
     "uplink_bytes": "12345",
@@ -244,6 +269,8 @@ capabilities 声明的字段，`sort_order` 为 `asc` 或 `desc`。默认按
       "config_revision": "",
       "route_tag": "",
       "group_path": [],
+      "destination": "api.openai.com",
+      "destination_type": "domain",
       "destination_domain": "api.openai.com",
       "outbound_group": "",
       "actual_outbound_tag": "",
@@ -259,5 +286,5 @@ capabilities 声明的字段，`sort_order` 为 `asc` 或 `desc`。默认按
 
 计数器使用十进制 JSON 字符串，避免 JavaScript 客户端丢失 64 位整数精度。
 没有行匹配时，`actual_from` 与 `actual_to` 为空字符串。对于依赖 target detail
-的查询，它们的范围与 totals 只覆盖 `target_available_from` 之后可用的域名
-明细。
+的查询，纯域名查询只覆盖 `target_available_from` 之后的明细；按首选目标聚合
+或过滤时，只覆盖 `destination_available_from` 之后完整的域名或 IP 明细。

@@ -3,6 +3,7 @@ package trafficcontrol
 import (
 	"context"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,10 +33,12 @@ type TrackerMetadata struct {
 	OutboundType string
 	Trace        *RouteTrace
 
-	// DestinationDomain freezes the best logical destination domain available
-	// when the routed tracker is created. Routing metadata may be mutated later
-	// by an outbound, so history must not derive this dimension at flush time.
+	// DestinationDomain and DestinationIP freeze the preferred logical target
+	// when the routed tracker is created. A valid domain has priority and leaves
+	// DestinationIP empty. Routing metadata may be mutated later by an outbound,
+	// so history must not derive these dimensions at flush time.
 	DestinationDomain string
+	DestinationIP     string
 }
 
 type Tracker interface {
@@ -120,6 +123,7 @@ func (m *Manager) newTrackerMetadata(ctx context.Context, metadata adapter.Inbou
 			next = networkGroup.NowForNetwork(metadata.Network)
 		}
 	}
+	destinationDomain, destinationIP := destinationFromMetadata(metadata)
 	return TrackerMetadata{
 		ID:                id,
 		Metadata:          metadata,
@@ -131,8 +135,17 @@ func (m *Manager) newTrackerMetadata(ctx context.Context, metadata adapter.Inbou
 		Outbound:          outbound,
 		OutboundType:      outboundType,
 		Trace:             RouteTraceFromContext(ctx),
-		DestinationDomain: destinationDomainFromMetadata(metadata),
+		DestinationDomain: destinationDomain,
+		DestinationIP:     destinationIP,
 	}
+}
+
+func destinationFromMetadata(metadata adapter.InboundContext) (string, string) {
+	domain := destinationDomainFromMetadata(metadata)
+	if domain != "" {
+		return domain, ""
+	}
+	return "", destinationIPFromMetadata(metadata)
 }
 
 func destinationDomainFromMetadata(metadata adapter.InboundContext) string {
@@ -150,6 +163,22 @@ func normalizeDestinationDomain(domain string) string {
 		return ""
 	}
 	return domain
+}
+
+func destinationIPFromMetadata(metadata adapter.InboundContext) string {
+	address := metadata.Destination.Addr
+	if !address.IsValid() {
+		return ""
+	}
+	return normalizeDestinationIP(address.String())
+}
+
+func normalizeDestinationIP(address string) string {
+	parsed, err := netip.ParseAddr(address)
+	if err != nil {
+		return ""
+	}
+	return parsed.WithZone("").Unmap().String()
 }
 
 type connTracker struct {

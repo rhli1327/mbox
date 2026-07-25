@@ -61,18 +61,35 @@ target-detail bucket:
 - A low-cardinality summary bucket stores route path, group, leaf outbound,
   network, and configuration revision. Existing databases already contain this
   bucket, so summary queries continue to include pre-upgrade history.
-- A target-detail bucket additionally stores `destination_domain`. It starts
-  at the first complete minute boundary after the domain-aware build opens the
+- A target-detail bucket additionally stores the pure `destination_domain` and,
+  in current builds, the fallback destination IP. Domain detail starts at the
+  first complete minute boundary after the domain-aware build opens the
   database. The partial minute containing the upgrade is deliberately excluded.
-  The `target_available_from` field reports the later of this complete
-  collection boundary and the current retention boundary.
+  The `target_available_from` field reports the later of this domain-detail
+  boundary and the current retention boundary.
 
 Pre-upgrade summary traffic is not fabricated as an empty/unknown domain.
 Domain grouping and any query with `destination_domains` therefore cover only
 the target-detail period. Within that period, an empty `destination_domain`
-represents a flow for which no valid logical domain was available, such as an
-IP-only flow. This makes target-period known and unknown domain totals
-reconcilable.
+represents a flow for which no valid logical domain was available; this includes
+IP-only flows.
+
+The preferred `destination` dimension was introduced after pure domain detail.
+An existing database cannot recover the IPs represented by its old empty-domain
+records. Such records are not fabricated as complete targets. The
+`destination_available_from` field reports the first complete minute collected
+with domain-or-IP detail, clamped to the current retention boundary. Grouping by
+`destination` and any query with `destinations` cover only that later period.
+New databases normally initialize both availability boundaries to the same
+minute.
+
+The completeness boundary assumes one-way upgrades while reusing a database.
+If the database is temporarily opened by an older statistics build that does
+not write fallback IPs and is then upgraded again, the service cannot
+distinguish missing IPs from genuinely unknown targets, so the existing
+`destination_available_from` value is no longer reliable. Restore a
+pre-downgrade database backup or start a new traffic database to establish a
+new completeness boundary.
 
 Pending counters are flushed on the five-second tick and at clean shutdown. An
 unclean failure can lose the most recent unsampled and unflushed deltas
@@ -114,15 +131,18 @@ the stored route dimensions are:
 | `actual_outbound_tag` | Network-specific leaf outbound actually selected and dispatched. |
 | `actual_outbound_type` | Type of the selected leaf. When `actual_outbound` grouping combines one tag used with multiple types, this is an empty string. |
 | `network` | `tcp` or `udp`. |
-| `destination_domain` | Best valid logical target domain frozen when routing hands the flow to the outbound. A valid `Destination.Fqdn` has priority; otherwise a valid sniffed/reverse-mapped `Metadata.Domain` is used. It is lower-cased and trailing dots are removed. Invalid names and IP-only targets produce an empty string. This is not the proxy-node server hostname. |
+| `destination` | Preferred logical target frozen when routing hands the flow to the outbound: the valid logical domain when available, otherwise `Destination.Addr`. Domains are lower-cased with one trailing dot removed. IPs use canonical text; IPv4-mapped IPv6 is unwrapped and an IPv6 zone is removed. This is neither the proxy-node server address nor a domain's resolved/dialed IP. |
+| `destination_type` | `domain` or `ip`, matching `destination`; empty when neither is available. |
+| `destination_domain` | Backward-compatible pure-domain dimension. A valid `Destination.Fqdn` has priority; otherwise a valid sniffed/reverse-mapped `Metadata.Domain` is used. Invalid names and IP-only targets produce an empty string. It never contains an IP. |
 | `connections` | Number of resolved TCP flows or UDP packet sessions. A resolved zero-byte dispatch still counts once. |
 
 The v2 query supports these `group_by` values:
 
 | Value | Result key and aggregation |
 |-------|----------------------------|
-| `route_path` | Preserves the complete summary dimensions (`config_revision`, route path, leaf tag/type, and network) while folding `destination_domain`. This is the default. |
-| `destination_domain` | Groups only by normalized target domain across configuration revisions, networks, routes, groups, and nodes. |
+| `route_path` | Preserves the complete summary dimensions (`config_revision`, route path, leaf tag/type, and network) while folding target dimensions. This is the default. |
+| `destination` | Groups by the preferred normalized domain-or-IP target across configuration revisions, networks, routes, groups, and nodes. This is the grouping intended for current target views. |
+| `destination_domain` | Backward-compatible grouping by pure normalized target domain. IP-only and otherwise domain-less flows share the empty-domain row. |
 | `outbound_group` | Groups only by the innermost/leaf-parent group tag across revisions and networks. |
 | `actual_outbound` | Groups only by leaf outbound tag across revisions and networks. |
 
@@ -135,7 +155,7 @@ Both supported listeners expose:
 
 | Resource | Method | Purpose |
 |----------|--------|---------|
-| `/mbox/v2/traffic/capabilities` | `GET` | Discover dimensions, groupings, sort fields, storage parameters, and target availability. |
+| `/mbox/v2/traffic/capabilities` | `GET` | Discover dimensions, groupings, sort fields, storage parameters, and domain/target availability. |
 | `/mbox/v2/traffic/query` | `POST` | Filter, aggregate, search, sort, and page summary rows. |
 
 This build mounts the v2 path only; the incompatible v1 endpoint is not kept.
@@ -149,8 +169,9 @@ Authentication is inherited from the listener:
 
 !!! warning
 
-    Traffic history, especially target domains, is sensitive. If the listener
-    has an empty secret, restrict it to loopback or a trusted private network.
+    Traffic history, especially target domains and IPs, is sensitive. If the
+    listener has an empty secret, restrict it to loopback or a trusted private
+    network.
 
 Example capabilities response:
 
@@ -170,6 +191,8 @@ Example capabilities response:
     "config_revision",
     "route_tag",
     "group_path",
+    "destination",
+    "destination_type",
     "destination_domain",
     "outbound_group",
     "actual_outbound_tag",
@@ -178,6 +201,7 @@ Example capabilities response:
   ],
   "groupings": [
     "route_path",
+    "destination",
     "destination_domain",
     "outbound_group",
     "actual_outbound"
@@ -192,13 +216,16 @@ Example capabilities response:
   "max_page_size": 200,
   "bucket_seconds": 60,
   "retention_seconds": 2592000,
-  "target_available_from": "2026-07-25T12:00:00Z"
+  "target_available_from": "2026-07-25T12:00:00Z",
+  "destination_available_from": "2026-07-25T15:00:00Z"
 }
 ```
 
 `target_available_from` is an empty string before history storage has been
 initialized. It moves forward with the retention window after the original
-target-collection start ages out.
+domain-detail collection start ages out. `destination_available_from` follows
+the same rule for complete preferred domain-or-IP detail. On an upgraded
+database it can be later than `target_available_from`.
 
 ### Query
 
@@ -206,11 +233,11 @@ target-collection start ages out.
 {
   "from": "2026-07-25T00:00:00Z",
   "to": "2026-07-26T00:00:00Z",
-  "group_by": "destination_domain",
+  "group_by": "destination",
   "route_tags": ["AI"],
   "group_tags": ["AI-Auto"],
   "actual_outbound_tags": ["ai-node"],
-  "destination_domains": ["api.openai.com"],
+  "destinations": ["api.openai.com", "192.0.2.1"],
   "networks": ["tcp", "udp"],
   "search": "openai",
   "sort_by": "total_bytes",
@@ -221,16 +248,20 @@ target-collection start ages out.
 ```
 
 `from` and `to` are optional RFC 3339 timestamps and must satisfy `from < to`.
-The five list filters are exact-match allowlists and are combined with AND.
+The six list filters are exact-match allowlists. Values within one filter are
+ORed, and different filter dimensions are combined with AND.
 `group_tags` matches `outbound_group`, not every ancestor in `group_path`.
-Destination-domain filter values are normalized like stored domains; an empty
-string explicitly selects target-period flows with no domain. Each filter
-accepts at most 256 values, each at most 1024 UTF-8 bytes. `networks` accepts
-only `tcp` and `udp`.
+`destinations` accepts normalized domains or IPs; IPv4 and IPv6 inputs are
+canonicalized. Its empty string explicitly selects flows with neither a valid
+domain nor a valid fallback IP. `destination_domains` remains domain-only; its
+empty string selects flows with no valid domain, including known IP-only flows.
+Each filter accepts at most 256 values, each at most 1024 UTF-8 bytes.
+`networks` accepts only `tcp` and `udp`.
 
 `search` is a case-insensitive substring match on the current grouping label:
-the displayed route path, destination domain, outbound group, or leaf outbound
-tag. It is applied after aggregation and before totals and pagination.
+the displayed route path, preferred destination, legacy destination domain,
+outbound group, or leaf outbound tag. It is applied after aggregation and
+before totals and pagination.
 
 The server performs filtering, aggregation, search, stable sorting, and only
 then pagination. `sort_by` accepts the fields advertised in capabilities.
@@ -246,12 +277,13 @@ Example response:
 
 ```json
 {
-  "group_by": "destination_domain",
+  "group_by": "destination",
   "page": 1,
   "page_size": 50,
   "total_rows": 1,
   "target_available_from": "2026-07-25T12:00:00Z",
-  "actual_from": "2026-07-25T12:00:00Z",
+  "destination_available_from": "2026-07-25T15:00:00Z",
+  "actual_from": "2026-07-25T15:00:00Z",
   "actual_to": "2026-07-26T00:00:00Z",
   "totals": {
     "uplink_bytes": "12345",
@@ -263,6 +295,8 @@ Example response:
       "config_revision": "",
       "route_tag": "",
       "group_path": [],
+      "destination": "api.openai.com",
+      "destination_type": "domain",
       "destination_domain": "api.openai.com",
       "outbound_group": "",
       "actual_outbound_tag": "",
@@ -278,5 +312,6 @@ Example response:
 
 Counters are decimal JSON strings so JavaScript clients do not lose 64-bit
 integer precision. `actual_from` and `actual_to` are empty strings when no rows
-match. For target-backed queries, their range and totals cover only target
-details at or after `target_available_from`.
+match. Pure-domain queries cover target details at or after
+`target_available_from`; preferred-destination grouping or filtering covers
+complete domain-or-IP details at or after `destination_available_from`.

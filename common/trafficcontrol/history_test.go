@@ -8,8 +8,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,31 +24,44 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 )
 
-func TestDestinationDomainNormalizationPriorityAndFreeze(t *testing.T) {
+func TestDestinationNormalizationPriorityAndFreeze(t *testing.T) {
 	for name, testCase := range map[string]struct {
-		metadata adapter.InboundContext
-		expected string
+		metadata       adapter.InboundContext
+		expectedDomain string
+		expectedIP     string
 	}{
 		"destination fqdn wins": {
 			metadata: adapter.InboundContext{
 				Destination: M.Socksaddr{Fqdn: "API.Example.COM."},
 				Domain:      "fallback.example",
 			},
-			expected: "api.example.com",
+			expectedDomain: "api.example.com",
 		},
-		"sniffed domain fallback": {
-			metadata: adapter.InboundContext{Domain: "ChatGPT.COM."},
-			expected: "chatgpt.com",
+		"sniffed domain wins over destination ip": {
+			metadata: adapter.InboundContext{
+				Destination: M.Socksaddr{Addr: netip.MustParseAddr("192.0.2.1")},
+				Domain:      "ChatGPT.COM.",
+			},
+			expectedDomain: "chatgpt.com",
 		},
-		"ip is not a domain": {
-			metadata: adapter.InboundContext{Destination: M.Socksaddr{Fqdn: "192.0.2.1"}},
+		"ipv4 fallback": {
+			metadata:   adapter.InboundContext{Destination: M.Socksaddr{Addr: netip.MustParseAddr("192.0.2.1")}},
+			expectedIP: "192.0.2.1",
+		},
+		"ipv4-mapped address is canonical": {
+			metadata:   adapter.InboundContext{Destination: M.Socksaddr{Addr: netip.MustParseAddr("::ffff:192.0.2.1")}},
+			expectedIP: "192.0.2.1",
+		},
+		"ipv6 zone is not part of target ip": {
+			metadata:   adapter.InboundContext{Destination: M.Socksaddr{Addr: netip.MustParseAddr("fe80::1%eth0")}},
+			expectedIP: "fe80::1",
 		},
 		"invalid destination falls back": {
 			metadata: adapter.InboundContext{
 				Destination: M.Socksaddr{Fqdn: "192.0.2.1"},
 				Domain:      "Sniffed.Example.",
 			},
-			expected: "sniffed.example",
+			expectedDomain: "sniffed.example",
 		},
 		"invalid host is not a domain": {
 			metadata: adapter.InboundContext{Domain: "bad host"},
@@ -56,11 +71,18 @@ func TestDestinationDomainNormalizationPriorityAndFreeze(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			frozen := destinationDomainFromMetadata(testCase.metadata)
+			domain, address := destinationFromMetadata(testCase.metadata)
 			testCase.metadata.Destination.Fqdn = "changed.example"
+			testCase.metadata.Destination.Addr = netip.MustParseAddr("203.0.113.1")
 			testCase.metadata.Domain = "changed.example"
-			if frozen != testCase.expected {
-				t.Fatalf("unexpected frozen domain: got %q, want %q", frozen, testCase.expected)
+			if domain != testCase.expectedDomain || address != testCase.expectedIP {
+				t.Fatalf(
+					"unexpected frozen destination: got (%q, %q), want (%q, %q)",
+					domain,
+					address,
+					testCase.expectedDomain,
+					testCase.expectedIP,
+				)
 			}
 		})
 	}
@@ -68,15 +90,25 @@ func TestDestinationDomainNormalizationPriorityAndFreeze(t *testing.T) {
 
 func TestTargetAvailableFromRespectsRetention(t *testing.T) {
 	now := time.Date(2026, time.July, 25, 12, 34, 56, 0, time.UTC)
-	history := &History{targetsFrom: now.Add(-2 * HistoryRetention)}
+	history := &History{
+		targetsFrom:      now.Add(-2 * HistoryRetention),
+		destinationsFrom: now.Add(-2 * HistoryRetention),
+	}
 	expected := now.Add(-HistoryRetention).Truncate(HistoryBucketInterval)
 	if actual := history.targetAvailableFromAt(now); !actual.Equal(expected) {
 		t.Fatalf("unexpected retention-clamped target availability: got %v, want %v", actual, expected)
 	}
+	if actual := history.destinationAvailableFromAt(now); !actual.Equal(expected) {
+		t.Fatalf("unexpected retention-clamped destination availability: got %v, want %v", actual, expected)
+	}
 	recent := now.Add(-time.Hour)
 	history.targetsFrom = recent
+	history.destinationsFrom = recent
 	if actual := history.targetAvailableFromAt(now); !actual.Equal(recent) {
 		t.Fatalf("recent target availability changed: got %v, want %v", actual, recent)
+	}
+	if actual := history.destinationAvailableFromAt(now); !actual.Equal(recent) {
+		t.Fatalf("recent destination availability changed: got %v, want %v", actual, recent)
 	}
 }
 
@@ -276,6 +308,37 @@ func TestHistoryKeepsLegacySummarySeparateFromTargetDetails(t *testing.T) {
 	if !bytes.Equal(currentKeyContent, legacyKeyContent) {
 		t.Fatalf("empty-domain summary key changed legacy encoding: %s != %s", currentKeyContent, legacyKeyContent)
 	}
+	legacyDomainKey := legacyKey
+	legacyDomainKey.DestinationDomain = "legacy.example"
+	legacyDomainKeyContent, err := json.Marshal(struct {
+		Bucket             int64
+		ConfigRevision     string
+		RouteTag           string
+		GroupPath          string
+		DestinationDomain  string `json:",omitempty"`
+		ActualOutboundTag  string
+		ActualOutboundType string
+		Network            string
+	}{
+		Bucket:             legacyDomainKey.Bucket,
+		ConfigRevision:     legacyDomainKey.ConfigRevision,
+		RouteTag:           legacyDomainKey.RouteTag,
+		GroupPath:          legacyDomainKey.GroupPath,
+		DestinationDomain:  legacyDomainKey.DestinationDomain,
+		ActualOutboundTag:  legacyDomainKey.ActualOutboundTag,
+		ActualOutboundType: legacyDomainKey.ActualOutboundType,
+		Network:            legacyDomainKey.Network,
+	})
+	if err != nil {
+		t.Fatal("encode legacy domain key shape:", err)
+	}
+	currentDomainKeyContent, err := json.Marshal(legacyDomainKey)
+	if err != nil {
+		t.Fatal("encode current domain key:", err)
+	}
+	if !bytes.Equal(currentDomainKeyContent, legacyDomainKeyContent) {
+		t.Fatalf("domain target key changed legacy encoding: %s != %s", currentDomainKeyContent, legacyDomainKeyContent)
+	}
 	err = history.db.Update(func(tx *bbolt.Tx) error {
 		bucket, err := tx.CreateBucketIfNotExists(historyBucket)
 		if err != nil {
@@ -373,7 +436,8 @@ func TestHistoryKeepsLegacySummarySeparateFromTargetDetails(t *testing.T) {
 		}
 		summaryCursor := summary.Cursor()
 		for _, summaryContent := summaryCursor.First(); summaryContent != nil; _, summaryContent = summaryCursor.Next() {
-			if bytes.Contains(summaryContent, []byte(`"destination_domain"`)) {
+			if bytes.Contains(summaryContent, []byte(`"destination_domain"`)) ||
+				bytes.Contains(summaryContent, []byte(`"destination_ip"`)) {
 				t.Fatalf("summary record unexpectedly contains a target dimension: %s", summaryContent)
 			}
 		}
@@ -410,9 +474,193 @@ func TestHistoryKeepsLegacySummarySeparateFromTargetDetails(t *testing.T) {
 	}
 }
 
+func TestHistoryMigratesDestinationAvailabilityWithoutFabricatingIP(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "traffic.db")
+	history := openTestHistory(t, databasePath, "revision-destination-migration")
+	oldTargetFrom := time.Now().UTC().Truncate(HistoryBucketInterval).Add(-10 * HistoryBucketInterval)
+	groupPath, err := json.Marshal([]string{"Proxy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldUnknownKey := historyKey{
+		Bucket:             oldTargetFrom.Unix(),
+		ConfigRevision:     history.configRevision,
+		RouteTag:           "Proxy",
+		GroupPath:          string(groupPath),
+		ActualOutboundTag:  "proxy-node",
+		ActualOutboundType: "vmess",
+		Network:            "tcp",
+	}
+	oldDomainKey := oldUnknownKey
+	oldDomainKey.DestinationDomain = "legacy.example"
+	err = history.db.Update(func(tx *bbolt.Tx) error {
+		metadata := tx.Bucket(historyMetadataBucket)
+		if err := metadata.Put(historyTargetsFromKey, historyBucketKeyPrefix(oldTargetFrom.Unix())); err != nil {
+			return err
+		}
+		if err := metadata.Delete(historyDestinationsFromKey); err != nil {
+			return err
+		}
+		targets, err := tx.CreateBucketIfNotExists(historyTargetsBucket)
+		if err != nil {
+			return err
+		}
+		if err = putHistoryDelta(targets, oldUnknownKey, historyCounters{UplinkBytes: 10, Connections: 1}); err != nil {
+			return err
+		}
+		return putHistoryDelta(targets, oldDomainKey, historyCounters{DownlinkBytes: 20, Connections: 1})
+	})
+	if err != nil {
+		t.Fatal("prepare pre-IP target database:", err)
+	}
+	if err = history.Close(); err != nil {
+		t.Fatal("close pre-IP history:", err)
+	}
+
+	migrated := openTestHistory(t, databasePath, "revision-destination-migration")
+	destinationAvailableFrom := migrated.DestinationAvailableFrom()
+	if !migrated.TargetAvailableFrom().Equal(oldTargetFrom) {
+		t.Fatalf("legacy target boundary changed: %v != %v", migrated.TargetAvailableFrom(), oldTargetFrom)
+	}
+	if !destinationAvailableFrom.After(oldTargetFrom) {
+		t.Fatalf(
+			"destination completeness boundary did not advance past legacy target data: %v <= %v",
+			destinationAvailableFrom,
+			oldTargetFrom,
+		)
+	}
+
+	legacyDomains, err := migrated.Query(context.Background(), HistoryQuery{
+		GroupBy:  HistoryGroupByDestinationDomain,
+		PageSize: 20,
+	})
+	if err != nil {
+		t.Fatal("query legacy domains after migration:", err)
+	}
+	if legacyDomains.TotalRows != 2 ||
+		legacyDomains.Totals != (HistoryCounters{UplinkBytes: 10, DownlinkBytes: 20, Connections: 2}) {
+		t.Fatalf("legacy domain detail was not preserved: %#v", legacyDomains)
+	}
+	if row := findHistoryRowByLabel(t, legacyDomains.Rows, HistoryGroupByDestinationDomain, "legacy.example"); row.Destination != "legacy.example" || row.DestinationType != HistoryDestinationTypeDomain {
+		t.Fatalf("legacy domain did not populate additive destination fields: %#v", row)
+	}
+
+	destinations, err := migrated.Query(context.Background(), HistoryQuery{
+		GroupBy:  HistoryGroupByDestination,
+		PageSize: 20,
+	})
+	if err != nil {
+		t.Fatal("query destinations before complete data:", err)
+	}
+	if destinations.TotalRows != 0 || destinations.Totals != (HistoryCounters{}) {
+		t.Fatalf("pre-migration empty domains were fabricated as complete destinations: %#v", destinations)
+	}
+
+	newIPKey := oldUnknownKey
+	newIPKey.Bucket = destinationAvailableFrom.Unix()
+	newIPKey.DestinationIP = "2001:db8::1"
+	newDomainKey := oldDomainKey
+	newDomainKey.Bucket = destinationAvailableFrom.Unix()
+	newDomainKey.DestinationDomain = "new.example"
+	newUnknownKey := oldUnknownKey
+	newUnknownKey.Bucket = destinationAvailableFrom.Unix()
+	migrated.access.Lock()
+	migrated.pending[newIPKey] = historyCounters{UplinkBytes: 1, Connections: 1}
+	migrated.pending[newDomainKey] = historyCounters{DownlinkBytes: 2, Connections: 1}
+	migrated.pending[newUnknownKey] = historyCounters{UplinkBytes: 3, DownlinkBytes: 4, Connections: 1}
+	migrated.access.Unlock()
+
+	destinations, err = migrated.Query(context.Background(), HistoryQuery{
+		GroupBy:  HistoryGroupByDestination,
+		PageSize: 20,
+	})
+	if err != nil {
+		t.Fatal("query complete destinations:", err)
+	}
+	if destinations.TotalRows != 3 ||
+		destinations.Totals != (HistoryCounters{UplinkBytes: 4, DownlinkBytes: 6, Connections: 3}) {
+		t.Fatalf("unexpected complete destination data: %#v", destinations)
+	}
+	for label, expectedType := range map[string]string{
+		"":            "",
+		"2001:db8::1": HistoryDestinationTypeIP,
+		"new.example": HistoryDestinationTypeDomain,
+	} {
+		row := findHistoryRowByLabel(t, destinations.Rows, HistoryGroupByDestination, label)
+		if row.DestinationType != expectedType {
+			t.Fatalf("unexpected destination type for %q: %#v", label, row)
+		}
+	}
+	if err = migrated.Close(); err != nil {
+		t.Fatal("close migrated history:", err)
+	}
+
+	reopened := openTestHistory(t, databasePath, "revision-destination-migration")
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Error("close reopened destination history:", err)
+		}
+	}()
+	if !reopened.DestinationAvailableFrom().Equal(destinationAvailableFrom) {
+		t.Fatalf(
+			"destination boundary changed across reopen: %v != %v",
+			reopened.DestinationAvailableFrom(),
+			destinationAvailableFrom,
+		)
+	}
+	reopenedDestinations, err := reopened.Query(context.Background(), HistoryQuery{
+		GroupBy:  HistoryGroupByDestination,
+		PageSize: 20,
+	})
+	if err != nil {
+		t.Fatal("query reopened destinations:", err)
+	}
+	ipRow := findHistoryRowByLabel(t, reopenedDestinations.Rows, HistoryGroupByDestination, "2001:db8::1")
+	if ipRow.DestinationType != HistoryDestinationTypeIP || ipRow.UplinkBytes != 1 {
+		t.Fatalf("IP destination did not survive reopen: %#v", ipRow)
+	}
+}
+
+func TestHistoryDestinationAvailabilityDoesNotPrecedeFutureTargetBoundary(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "traffic.db")
+	history := openTestHistory(t, databasePath, "revision-destination-clock-rollback")
+	futureTargetFrom := time.Now().UTC().Truncate(HistoryBucketInterval).Add(time.Hour)
+	err := history.db.Update(func(tx *bbolt.Tx) error {
+		metadata := tx.Bucket(historyMetadataBucket)
+		if err := metadata.Put(historyTargetsFromKey, historyBucketKeyPrefix(futureTargetFrom.Unix())); err != nil {
+			return err
+		}
+		return metadata.Delete(historyDestinationsFromKey)
+	})
+	if err != nil {
+		t.Fatal("prepare future target boundary:", err)
+	}
+	if err = history.Close(); err != nil {
+		t.Fatal("close history with future target boundary:", err)
+	}
+
+	migrated := openTestHistory(t, databasePath, "revision-destination-clock-rollback")
+	defer func() {
+		if err := migrated.Close(); err != nil {
+			t.Error("close migrated history:", err)
+		}
+	}()
+	if !migrated.targetsFrom.Equal(futureTargetFrom) {
+		t.Fatalf("future target boundary changed: %v != %v", migrated.targetsFrom, futureTargetFrom)
+	}
+	if !migrated.destinationsFrom.Equal(futureTargetFrom) {
+		t.Fatalf(
+			"destination boundary preceded future target boundary: %v != %v",
+			migrated.destinationsFrom,
+			futureTargetFrom,
+		)
+	}
+}
+
 func TestHistoryGroupingsFilteringSearchSortingAndPagination(t *testing.T) {
 	history := openTestHistory(t, filepath.Join(t.TempDir(), "traffic.db"), "revision-query-v2")
 	history.targetsFrom = time.Now().UTC().Truncate(HistoryBucketInterval)
+	history.destinationsFrom = history.targetsFrom
 	defer func() {
 		if err := history.Close(); err != nil {
 			t.Error("close v2 query history:", err)
@@ -451,6 +699,17 @@ func TestHistoryGroupingsFilteringSearchSortingAndPagination(t *testing.T) {
 	record("tcp", "D", []groupSelection{
 		{parent: "D", selected: "node-d", selectedType: "vmess"},
 	}, "d.example", 4, 3)
+	ipMetadata := resolvedMetadata("tcp", "IP", []groupSelection{
+		{parent: "IP", selected: "node-ip", selectedType: "direct"},
+	})
+	ipMetadata.DestinationIP = "::ffff:192.0.2.44"
+	history.RecordDelta(ipMetadata, 8, 9, true)
+	priorityMetadata := resolvedMetadata("udp", "Priority", []groupSelection{
+		{parent: "Priority", selected: "node-priority", selectedType: "direct"},
+	})
+	priorityMetadata.DestinationDomain = "Priority.Example."
+	priorityMetadata.DestinationIP = "203.0.113.9"
+	history.RecordDelta(priorityMetadata, 6, 7, true)
 
 	routeRows, err := history.Query(context.Background(), HistoryQuery{
 		GroupBy:  HistoryGroupByRoutePath,
@@ -459,12 +718,12 @@ func TestHistoryGroupingsFilteringSearchSortingAndPagination(t *testing.T) {
 	if err != nil {
 		t.Fatal("query route paths:", err)
 	}
-	if routeRows.TotalRows != 6 {
+	if routeRows.TotalRows != 8 {
 		t.Fatalf("unexpected route-path rows: %#v", routeRows.Rows)
 	}
 	for _, row := range routeRows.Rows {
-		if row.DestinationDomain != "" {
-			t.Fatalf("route_path did not fold destination domain: %#v", row)
+		if row.Destination != "" || row.DestinationType != "" || row.DestinationDomain != "" {
+			t.Fatalf("route_path did not fold destination dimensions: %#v", row)
 		}
 		if len(row.GroupPath) > 0 && row.OutboundGroup != row.GroupPath[len(row.GroupPath)-1] {
 			t.Fatalf("route_path has inconsistent outbound group: %#v", row)
@@ -478,12 +737,35 @@ func TestHistoryGroupingsFilteringSearchSortingAndPagination(t *testing.T) {
 	if err != nil {
 		t.Fatal("query domains:", err)
 	}
-	if domains.TotalRows != 5 {
+	if domains.TotalRows != 6 {
 		t.Fatalf("unexpected domain rows: %#v", domains.Rows)
 	}
 	aDomain := findHistoryRowByLabel(t, domains.Rows, HistoryGroupByDestinationDomain, "a.example")
 	if aDomain.UplinkBytes != 105 || aDomain.DownlinkBytes != 25 || aDomain.Connections != 2 {
 		t.Fatalf("unexpected a.example aggregate: %#v", aDomain)
+	}
+
+	destinations, err := history.Query(context.Background(), HistoryQuery{
+		GroupBy:  HistoryGroupByDestination,
+		PageSize: 20,
+	})
+	if err != nil {
+		t.Fatal("query destinations:", err)
+	}
+	if destinations.TotalRows != 7 {
+		t.Fatalf("unexpected destination rows: %#v", destinations.Rows)
+	}
+	ipDestination := findHistoryRowByLabel(t, destinations.Rows, HistoryGroupByDestination, "192.0.2.44")
+	if ipDestination.DestinationType != HistoryDestinationTypeIP ||
+		ipDestination.DestinationDomain != "" ||
+		ipDestination.UplinkBytes != 8 ||
+		ipDestination.DownlinkBytes != 9 {
+		t.Fatalf("unexpected IP destination aggregate: %#v", ipDestination)
+	}
+	priorityDestination := findHistoryRowByLabel(t, destinations.Rows, HistoryGroupByDestination, "priority.example")
+	if priorityDestination.DestinationType != HistoryDestinationTypeDomain ||
+		priorityDestination.DestinationDomain != "priority.example" {
+		t.Fatalf("domain did not take priority over fallback IP: %#v", priorityDestination)
 	}
 
 	groups, err := history.Query(context.Background(), HistoryQuery{
@@ -526,6 +808,38 @@ func TestHistoryGroupingsFilteringSearchSortingAndPagination(t *testing.T) {
 	if filtered.TotalRows != 1 ||
 		filtered.Totals != (HistoryCounters{UplinkBytes: 100, DownlinkBytes: 20, Connections: 1}) {
 		t.Fatalf("unexpected exact-filter result: %#v", filtered)
+	}
+
+	destinationFiltered, err := history.Query(context.Background(), HistoryQuery{
+		GroupBy:      HistoryGroupByDestination,
+		RouteTags:    []string{"AI", "IP"},
+		Destinations: []string{"A.EXAMPLE.", "::ffff:192.0.2.44"},
+		Networks:     []string{"tcp"},
+		PageSize:     20,
+	})
+	if err != nil {
+		t.Fatal("query destination filters:", err)
+	}
+	if destinationFiltered.TotalRows != 2 ||
+		destinationFiltered.Totals != (HistoryCounters{UplinkBytes: 108, DownlinkBytes: 29, Connections: 2}) {
+		t.Fatalf("destination OR and cross-dimension AND filters changed: %#v", destinationFiltered)
+	}
+	if leakedIP, err := history.Query(context.Background(), HistoryQuery{
+		GroupBy:      HistoryGroupByDestination,
+		Destinations: []string{"203.0.113.9"},
+	}); err != nil {
+		t.Fatal("query suppressed fallback IP:", err)
+	} else if leakedIP.TotalRows != 0 {
+		t.Fatalf("domain-priority flow was also exposed under its fallback IP: %#v", leakedIP)
+	}
+	if unknown, err := history.Query(context.Background(), HistoryQuery{
+		GroupBy:      HistoryGroupByDestination,
+		Destinations: []string{""},
+	}); err != nil {
+		t.Fatal("query unknown destination:", err)
+	} else if unknown.TotalRows != 1 ||
+		unknown.Totals != (HistoryCounters{UplinkBytes: 1, DownlinkBytes: 1, Connections: 1}) {
+		t.Fatalf("empty destination filter also selected known IPs: %#v", unknown)
 	}
 
 	searched, err := history.Query(context.Background(), HistoryQuery{
@@ -704,6 +1018,8 @@ func TestHistoryHTTPUsesDecimalStrings(t *testing.T) {
 		"config_revision",
 		"route_tag",
 		"group_path",
+		"destination",
+		"destination_type",
 		"destination_domain",
 		"outbound_group",
 		"actual_outbound_tag",
@@ -722,6 +1038,47 @@ func TestHistoryHTTPUsesDecimalStrings(t *testing.T) {
 	assertJSONString(t, body.Totals, "connections", "1")
 }
 
+func TestHistoryHTTPDestinationFallback(t *testing.T) {
+	history := openTestHistory(t, filepath.Join(t.TempDir(), "traffic.db"), "revision-http-destination")
+	history.targetsFrom = time.Now().UTC().Truncate(HistoryBucketInterval)
+	history.destinationsFrom = history.targetsFrom
+	defer func() {
+		if err := history.Close(); err != nil {
+			t.Error("close HTTP destination history:", err)
+		}
+	}()
+	metadata := resolvedMetadata("tcp", "IP", []groupSelection{
+		{parent: "IP", selected: "direct", selectedType: "direct"},
+	})
+	metadata.DestinationIP = "::ffff:192.0.2.5"
+	history.RecordDelta(metadata, 10, 20, true)
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/query",
+		strings.NewReader(`{"group_by":"destination","destinations":["::ffff:192.0.2.5"]}`),
+	)
+	response := httptest.NewRecorder()
+	NewHistoryHTTPHandler(history).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected response status %d: %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		GroupBy                  string                       `json:"group_by"`
+		DestinationAvailableFrom string                       `json:"destination_available_from"`
+		Rows                     []map[string]json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal("decode destination response:", err)
+	}
+	if body.GroupBy != HistoryGroupByDestination || body.DestinationAvailableFrom == "" || len(body.Rows) != 1 {
+		t.Fatalf("unexpected destination response: %#v", body)
+	}
+	assertJSONString(t, body.Rows[0], "destination", "192.0.2.5")
+	assertJSONString(t, body.Rows[0], "destination_type", HistoryDestinationTypeIP)
+	assertJSONString(t, body.Rows[0], "destination_domain", "")
+}
+
 func TestHistoryHTTPCapabilitiesV2(t *testing.T) {
 	history := openTestHistory(t, filepath.Join(t.TempDir(), "traffic.db"), "revision-capabilities-v2")
 	defer func() {
@@ -736,12 +1093,14 @@ func TestHistoryHTTPCapabilitiesV2(t *testing.T) {
 		t.Fatalf("unexpected response status %d: %s", response.Code, response.Body.String())
 	}
 	var body struct {
-		APIVersion          string   `json:"api_version"`
-		Groupings           []string `json:"groupings"`
-		SortFields          []string `json:"sort_fields"`
-		MaxPageSize         int      `json:"max_page_size"`
-		TargetAvailableFrom string   `json:"target_available_from"`
-		Features            struct {
+		APIVersion               string   `json:"api_version"`
+		Dimensions               []string `json:"dimensions"`
+		Groupings                []string `json:"groupings"`
+		SortFields               []string `json:"sort_fields"`
+		MaxPageSize              int      `json:"max_page_size"`
+		TargetAvailableFrom      string   `json:"target_available_from"`
+		DestinationAvailableFrom string   `json:"destination_available_from"`
+		Features                 struct {
 			Targets    bool `json:"targets"`
 			Pagination bool `json:"pagination"`
 			Sorting    bool `json:"sorting"`
@@ -754,6 +1113,7 @@ func TestHistoryHTTPCapabilitiesV2(t *testing.T) {
 	if body.APIVersion != "2" ||
 		!reflect.DeepEqual(body.Groupings, []string{
 			HistoryGroupByRoutePath,
+			HistoryGroupByDestination,
 			HistoryGroupByDestinationDomain,
 			HistoryGroupByOutboundGroup,
 			HistoryGroupByActualOutbound,
@@ -765,8 +1125,11 @@ func TestHistoryHTTPCapabilitiesV2(t *testing.T) {
 			HistorySortByDownlinkBytes,
 			HistorySortByConnections,
 		}) ||
+		!slices.Contains(body.Dimensions, "destination") ||
+		!slices.Contains(body.Dimensions, "destination_type") ||
 		body.MaxPageSize != HistoryPageSizeMax ||
 		body.TargetAvailableFrom == "" ||
+		body.DestinationAvailableFrom == "" ||
 		!body.Features.Targets || !body.Features.Pagination ||
 		!body.Features.Sorting || !body.Features.Filtering {
 		t.Fatalf("unexpected v2 capabilities: %#v", body)
@@ -871,6 +1234,7 @@ func TestHistoryHTTPRejectsInvalidQuery(t *testing.T) {
 		"sort by":         `{"sort_by":"rate"}`,
 		"sort order":      `{"sort_order":"sideways"}`,
 		"network":         `{"networks":["icmp"]}`,
+		"invalid target":  `{"destinations":["bad host"]}`,
 		"invalid domain":  `{"destination_domains":["192.0.2.1"]}`,
 		"invalid time":    `{"from":"yesterday"}`,
 		"time range":      `{"from":"2026-07-25T01:00:00Z","to":"2026-07-25T00:00:00Z"}`,
@@ -962,6 +1326,7 @@ func TestHistoryQueryRejectsInvalidOptions(t *testing.T) {
 		"sort":      {SortBy: "invalid"},
 		"order":     {SortOrder: "invalid"},
 		"network":   {Networks: []string{"icmp"}},
+		"target":    {Destinations: []string{"bad host"}},
 		"domain":    {DestinationDomains: []string{"192.0.2.1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
