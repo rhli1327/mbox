@@ -86,6 +86,14 @@ jobs:
           git push origin refs/tags/traffic-statistics-latest --force
 
           if gh release view traffic-statistics-latest >/dev/null 2>&1; then
+            for legacy_asset in \
+              sing-box-traffic-statistics_linux_amd64.tar.gz \
+              sing-box-traffic-statistics_linux_amd64.tar.gz.sha256 \
+              sing-box-traffic-statistics_linux_arm64.tar.gz \
+              sing-box-traffic-statistics_linux_arm64.tar.gz.sha256
+            do
+              gh release delete-asset traffic-statistics-latest "$legacy_asset" --yes 2>/dev/null || true
+            done
             gh release upload traffic-statistics-latest dist/* --clobber
             gh release edit traffic-statistics-latest \
               --title "mbox traffic statistics build" \
