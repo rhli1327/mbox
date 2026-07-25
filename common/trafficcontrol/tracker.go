@@ -3,6 +3,7 @@ package trafficcontrol
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,11 @@ type TrackerMetadata struct {
 	Outbound     string
 	OutboundType string
 	Trace        *RouteTrace
+
+	// DestinationDomain freezes the best logical destination domain available
+	// when the routed tracker is created. Routing metadata may be mutated later
+	// by an outbound, so history must not derive this dimension at flush time.
+	DestinationDomain string
 }
 
 type Tracker interface {
@@ -115,17 +121,35 @@ func (m *Manager) newTrackerMetadata(ctx context.Context, metadata adapter.Inbou
 		}
 	}
 	return TrackerMetadata{
-		ID:           id,
-		Metadata:     metadata,
-		CreatedAt:    time.Now(),
-		Upload:       upload,
-		Download:     download,
-		Chain:        common.Reverse(chain),
-		Rule:         matchedRule,
-		Outbound:     outbound,
-		OutboundType: outboundType,
-		Trace:        RouteTraceFromContext(ctx),
+		ID:                id,
+		Metadata:          metadata,
+		CreatedAt:         time.Now(),
+		Upload:            upload,
+		Download:          download,
+		Chain:             common.Reverse(chain),
+		Rule:              matchedRule,
+		Outbound:          outbound,
+		OutboundType:      outboundType,
+		Trace:             RouteTraceFromContext(ctx),
+		DestinationDomain: destinationDomainFromMetadata(metadata),
 	}
+}
+
+func destinationDomainFromMetadata(metadata adapter.InboundContext) string {
+	domain := normalizeDestinationDomain(metadata.Destination.Fqdn)
+	if domain != "" {
+		return domain
+	}
+	return normalizeDestinationDomain(metadata.Domain)
+}
+
+func normalizeDestinationDomain(domain string) string {
+	domain = strings.TrimSuffix(strings.ToLower(domain), ".")
+	if domain == "" || strings.HasSuffix(domain, ".") ||
+		net.ParseIP(domain) != nil || !M.IsDomainName(domain) {
+		return ""
+	}
+	return domain
 }
 
 type connTracker struct {

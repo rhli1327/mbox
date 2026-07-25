@@ -254,8 +254,8 @@ func mountTrafficHistoryAPI(router chi.Router, history *trafficcontrol.History) 
 		return
 	}
 	router.Mount(
-		"/mbox/v1/traffic",
-		http.StripPrefix("/mbox/v1/traffic", trafficcontrol.NewHistoryHTTPHandler(history)),
+		"/mbox/v2/traffic",
+		http.StripPrefix("/mbox/v2/traffic", trafficcontrol.NewHistoryHTTPHandler(history)),
 	)
 }
 

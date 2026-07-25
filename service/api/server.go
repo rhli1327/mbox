@@ -147,7 +147,7 @@ func newTrafficHistoryHTTPHandler(secret string, history *trafficcontrol.History
 		return nil
 	}
 	handler := http.StripPrefix(
-		"/mbox/v1/traffic",
+		"/mbox/v2/traffic",
 		trafficcontrol.NewHistoryHTTPHandler(history),
 	)
 	return authenticateHTTP(secret, handler)

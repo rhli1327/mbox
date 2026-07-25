@@ -21,7 +21,7 @@ func TestAuthenticateHTTPBearerSecret(t *testing.T) {
 		"malformed": "Basic traffic-secret",
 	} {
 		t.Run(name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, "/mbox/v1/traffic/capabilities", nil)
+			request := httptest.NewRequest(http.MethodGet, "/mbox/v2/traffic/capabilities", nil)
 			if authorization != "" {
 				request.Header.Set("Authorization", authorization)
 			}
@@ -36,7 +36,7 @@ func TestAuthenticateHTTPBearerSecret(t *testing.T) {
 		t.Fatalf("unauthorized requests reached the handler %d times", calls)
 	}
 
-	request := httptest.NewRequest(http.MethodGet, "/mbox/v1/traffic/capabilities", nil)
+	request := httptest.NewRequest(http.MethodGet, "/mbox/v2/traffic/capabilities", nil)
 	request.Header.Set("Authorization", "Bearer traffic-secret")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -55,7 +55,7 @@ func TestAuthenticateHTTPWithoutSecret(t *testing.T) {
 		writer.WriteHeader(http.StatusNoContent)
 	}))
 
-	request := httptest.NewRequest(http.MethodGet, "/mbox/v1/traffic/capabilities", nil)
+	request := httptest.NewRequest(http.MethodGet, "/mbox/v2/traffic/capabilities", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
@@ -108,7 +108,7 @@ func TestTrafficHistoryHTTPHandlerAuthentication(t *testing.T) {
 			bridge := &webBridge{
 				trafficHandler: newTrafficHistoryHTTPHandler(testCase.secret, testCase.history),
 			}
-			request := httptest.NewRequest(http.MethodGet, "/mbox/v1/traffic/capabilities", nil)
+			request := httptest.NewRequest(http.MethodGet, "/mbox/v2/traffic/capabilities", nil)
 			if testCase.authorization != "" {
 				request.Header.Set("Authorization", testCase.authorization)
 			}

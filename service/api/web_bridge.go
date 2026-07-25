@@ -58,7 +58,7 @@ type webBridge struct {
 func (b *webBridge) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	contentType := request.Header.Get("Content-Type")
 	switch {
-	case b.trafficHandler != nil && (request.URL.Path == "/mbox/v1/traffic" || strings.HasPrefix(request.URL.Path, "/mbox/v1/traffic/")):
+	case b.trafficHandler != nil && (request.URL.Path == "/mbox/v2/traffic" || strings.HasPrefix(request.URL.Path, "/mbox/v2/traffic/")):
 		b.trafficHandler.ServeHTTP(writer, request)
 	case isWebSocketGRPCRequest(request):
 		b.serveWebSocket(writer, request)

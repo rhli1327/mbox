@@ -4,7 +4,7 @@
 
     这是 mbox 扩展，并非上游 sing-box API 的组成部分。
 
-流量统计按路由与实际出站持久化上传、下载总量。默认不启用采集。
+流量统计会持久化已路由连接的上传、下载总量，默认不启用。
 
 在 `experimental.traffic_statistics` 中配置此对象。
 
@@ -23,9 +23,9 @@
 
 启用流量统计采集与持久化。
 
-启用此选项后，每个已配置的 [Clash API](./clash-api/) 监听器或
-[sing-box API 服务](../service/api/)都会挂载 REST 端点。监听器的 secret
-非空时，端点沿用该监听器现有的鉴权；secret 为空时，端点不要求鉴权。
+启用后，每个已配置的 [Clash API](./clash-api/) 监听器或
+[sing-box API 服务](../service/api/)都会挂载 REST 端点。监听器 secret
+非空时，端点沿用现有鉴权；secret 为空时不要求鉴权。
 
 #### path
 
@@ -33,14 +33,12 @@
 
 留空时使用 `traffic.db`。相对路径遵循 sing-box 的标准基础路径解析规则。
 
-修改配置不会把不同配置产生的数据合并。每行都包含不透明的
-`config_revision`，从而区分不同配置中复用的相同标签。该值根据解析后的配置
-选项序列化内容计算 keyed HMAC；随机 HMAC 密钥存放在流量数据库中。因此，同一
-数据库内相同序列化配置的 revision 保持稳定，但不同数据库之间不可比较。它
-不会泄露配置密钥，也不能当作可移植的内容哈希；运行效果等价的两份配置不保证
-得到相同 revision。
+每条路由路径记录都带有不透明的 `config_revision`。它根据解析后的配置序列化
+内容计算 keyed HMAC，随机 HMAC 密钥保存在流量数据库中。因此，同一数据库内
+相同配置的 revision 保持稳定，不同数据库之间不可比较；它不会泄露配置密钥，
+也不是可移植的内容哈希。
 
-### 当前存储行为
+### 存储与统计口径
 
 | 属性 | 当前值 |
 |------|--------|
@@ -48,115 +46,143 @@
 | 保留期 | 30 天 |
 | 活跃流采样与待写数据落盘 tick | 5 秒 |
 
-这些数值只是当前实现的默认值，并非稳定的协议承诺。客户端必须从
-capabilities 端点读取 `bucket_seconds` 和 `retention_seconds`，不能硬编码。
-采样和刷新周期也可能在不同 mbox 构建之间变化。
+这些数值是当前实现默认值，并非稳定协议承诺。客户端必须读取 capabilities
+响应。
 
-当前实现会在 5 秒刷新 tick 到达时把待写数据写入磁盘。
+每一笔采样增量都会写入 summary bucket；到达 target 完整采集边界后，同一个
+Bolt 事务还会将其写入 target detail bucket：
 
-正常关闭时会刷新剩余的待写计数。
-进程或机器异常退出时，最近尚未采样及尚未落盘的增量可能丢失（按当前实现，约为
-最多两个 5 秒 tick）。
+- 低基数 summary bucket 保存路由路径、节点组、叶子出站、网络与配置 revision。
+  旧数据库已经包含该 bucket，因此非域名汇总仍能包含升级前的历史。
+- target detail bucket 在相同维度之外保存 `destination_domain`。它从支持域名
+  的构建首次打开数据库后的下一个完整分钟边界开始记录，并有意排除升级所在的
+  不完整分钟。`target_available_from` 取该完整采集边界与当前保留期边界两者中
+  较晚的时间。
 
-对于活跃的长连接，增量会归入采样时刻所在的时间桶；流关闭时还会采集最后一段
-增量。因此，时间范围边界可能有约一个采样周期的近似误差，时间桶时间戳不适合
-当作计费级事件时间戳。
+系统不会把升级前仅存在于 summary 的流量伪造成空域名或“未知域名”。因此，按
+域名聚合以及任何带 `destination_domains` 过滤的查询只覆盖 target detail
+可用时段。在该时段内，空 `destination_domain` 表示路由时没有可用的有效逻辑
+域名，例如纯 IP 连接；这样该时段内的已知域名与未知域名总量仍可核对。
 
-### 维度与计数
+待写计数会在 5 秒 tick 到达时以及正常关闭时落盘。异常退出可能丢失最近尚未
+采样及尚未落盘的增量（按当前实现约两个 tick）。长连接增量归入采样时刻所在的
+时间桶，因此时间范围边界可能有约一个采样周期的误差，不适合作为计费级事件
+时间戳。
 
-假设路由选择了 `AI` selector，随后选择 `AI-Auto` URLTest 组，最终选择
-`ai-node`，相应维度为：
+`uplink_bytes` 与 `downlink_bytes` 使用 `logical_payload` 口径，在已路由流的
+逻辑边界计量。它们不包含加密链路开销、协议封装、填充或链路层开销。上传字节
+表示已从客户端侧读取，不代表已送达目标；下载字节在写向客户端侧时计数。
+
+为保持这一统计边界，启用历史记录后会禁用被跟踪流量的可替换 reader/writer
+以及 splice、zero-copy 等快速复制路径，因此吞吐可能降低。持久化统计仍保持
+按需启用。
+
+### 维度与聚合方式
+
+假设路由选择 `AI`，随后经过 `AI-Auto`，最终分派到 `ai-node`，相应路由维度为：
 
 ```json
 {
   "route_tag": "AI",
   "group_path": ["AI", "AI-Auto"],
+  "outbound_group": "AI-Auto",
   "actual_outbound_tag": "ai-node"
 }
 ```
 
 | 字段 | 含义 |
 |------|------|
-| `route_tag` | 匹配的路由动作所选择的出站标签；若没有规则覆盖，则为最终路由选择的标签。它不是路由规则本身的可选 tag，在示例中始终为 `AI`。 |
-| `group_path` | 从路由选中的组到最内层组，按实际经过顺序排列的组标签。数组不包含叶子出站；直接路由到叶子时为空数组。 |
-| `actual_outbound_tag` | 针对该网络实际选择并分派的叶子出站标签。若流在解析出叶子之前结束，则不会记录该流。 |
-| `actual_outbound_type` | 实际叶子出站的类型。 |
-| `network` | `tcp` 或 `udp`。URLTest 会按网络分别解析实际选择。 |
-| `uplink_bytes` | 从入站/客户端发往目标方向的逻辑负载字节数。 |
-| `downlink_bytes` | 从目标返回入站/客户端方向的逻辑负载字节数。 |
-| `connections` | 已解析实际叶子的 TCP 路由流或 UDP 数据包会话数。已解析但没有字节的分派（包括之后失败的分派）仍计为一次。 |
-| `config_revision` | 序列化配置选项在本数据库中的不透明 revision。 |
+| `config_revision` | 本数据库内不透明的配置 revision。 |
+| `route_tag` | 路由动作选择的出站标签；没有规则覆盖时为最终路由选择的标签。它不是路由规则本身的可选 tag。 |
+| `group_path` | 从路由选中的组到最内层组，按顺序记录实际经过的出站组标签。直接路由到叶子时为空数组。 |
+| `outbound_group` | `group_path` 的最后一个元素，即叶子节点的直接父组；直接路由到叶子时为空字符串。 |
+| `actual_outbound_tag` | 针对该网络实际选择并分派的叶子出站标签。 |
+| `actual_outbound_type` | 叶子出站类型。按 `actual_outbound` 聚合时，若同一 tag 在查询范围内对应多种类型，则为空字符串。 |
+| `network` | `tcp` 或 `udp`。 |
+| `destination_domain` | 路由完成并交给 outbound 时冻结的最佳有效逻辑目标域名。优先取有效的 `Destination.Fqdn`，否则取有效的嗅探或反向映射 `Metadata.Domain`；统一转小写并去掉尾点。无效名称和纯 IP 目标为空。它不是代理节点服务器域名。 |
+| `connections` | 已解析的 TCP 流或 UDP 数据包会话数。已解析但没有字节的分派仍计为一次。 |
 
-这条路径描述逻辑出站组的分派过程。叶子下层使用的出站 detour 或传输 socket
-不会作为 `group_path` 的额外元素，也不会取代 `actual_outbound_tag`。
+v2 查询支持以下 `group_by`：
 
-`uplink_bytes` 与 `downlink_bytes` 使用 `logical_payload` 统计口径，计量路由流
-逻辑边界观察到的字节，而不是出站链路上的字节。它们不包含加密传输开销、
-协议封装、填充或链路层开销。具体而言，上传流量在从入站/客户端方向成功读取后
-计数，并不保证同一批字节已成功写到目标；下载流量在写向入站/客户端方向时计数。
-这些计数用于运行流量核算，不代表端到端送达证明。
+| 值 | 聚合语义 |
+|----|----------|
+| `route_path` | 保留完整 summary 维度（`config_revision`、路由路径、叶子 tag/type 与网络），折叠 `destination_domain`。这是默认值。 |
+| `destination_domain` | 只按规范化目标域名聚合，跨配置 revision、网络、路由、组和节点汇总。 |
+| `outbound_group` | 只按最内层/叶子父组标签聚合，跨 revision 与网络汇总。 |
+| `actual_outbound` | 只按叶子出站 tag 聚合，跨 revision 与网络汇总。 |
 
-为保持这一计数边界，启用历史统计后，被跟踪流量会禁用可替换 reader/writer
-以及 splice、zero-copy 等快速复制路径，因此吞吐可能低于普通构建。这也是持久化
-历史保持按需启用、仅用于确有统计需求机器的原因。
+响应中的每一行始终包含全部维度字段；当前聚合方式不适用的字段为空字符串，
+`group_path` 则为空数组。
 
-目前不采集目标域名或目标 IP 统计，因此 capabilities 响应中的
-`features.targets` 为 `false`。
+### REST API v2
 
-### REST API
-
-两种受支持的监听器都提供相同的 REST 资源：
+两种监听器都提供：
 
 | 资源 | 方法 | 用途 |
 |------|------|------|
-| `/mbox/v1/traffic/capabilities` | `GET` | 获取 schema、统计口径、维度与当前存储参数。 |
-| `/mbox/v1/traffic/query` | `POST` | 查询汇总行。 |
+| `/mbox/v2/traffic/capabilities` | `GET` | 获取维度、聚合方式、排序字段、存储参数与域名明细可用时间。 |
+| `/mbox/v2/traffic/query` | `POST` | 过滤、聚合、搜索、排序并分页查询汇总行。 |
 
-监听器及其鉴权来源不同：
+当前构建只挂载 v2 路径，不保留不兼容的 v1 端点。
 
-| 监听器 | 配置 | 鉴权 |
-|--------|------|------|
-| Clash API | `experimental.clash_api.external_controller` | `experimental.clash_api.secret` 非空时使用 `Authorization: Bearer <secret>`；为空时不鉴权。 |
-| 原生 sing-box API | 顶层 `"type": "api"` 服务 | 该 API 服务的 `secret` 非空时使用 `Authorization: Bearer <secret>`；为空时不鉴权。 |
+鉴权沿用监听器配置：
+
+| 监听器 | 鉴权 |
+|--------|------|
+| Clash API | `experimental.clash_api.secret` 非空时使用 `Authorization: Bearer <secret>`；为空时不鉴权。 |
+| 原生 API 服务 | 服务的 `secret` 非空时使用 `Authorization: Bearer <secret>`；为空时不鉴权。 |
 
 !!! warning
 
-    流量历史会暴露用量以及路由、分组和实际出站标签。监听器 secret 为空时，
-    应只监听回环地址或可信私网，不要直接暴露到互联网。
+    流量历史，特别是目标域名，属于敏感信息。监听器 secret 为空时，应只监听
+    回环地址或可信私网。
 
-配置了 secret 时，例如：
-
-```bash
-curl \
-  -H 'Authorization: Bearer change-me' \
-  http://127.0.0.1:9090/mbox/v1/traffic/capabilities
-```
-
-监听器 secret 为空时省略 `Authorization` 请求头。
-
-当前 capabilities 响应类似：
+capabilities 响应示例：
 
 ```json
 {
-  "api_version": "1",
+  "api_version": "2",
   "metric_scope": "logical_payload",
   "features": {
     "summary": true,
     "series": false,
-    "targets": false
+    "targets": true,
+    "pagination": true,
+    "sorting": true,
+    "filtering": true
   },
   "dimensions": [
     "config_revision",
     "route_tag",
     "group_path",
+    "destination_domain",
+    "outbound_group",
     "actual_outbound_tag",
     "actual_outbound_type",
     "network"
   ],
+  "groupings": [
+    "route_path",
+    "destination_domain",
+    "outbound_group",
+    "actual_outbound"
+  ],
+  "sort_fields": [
+    "name",
+    "total_bytes",
+    "uplink_bytes",
+    "downlink_bytes",
+    "connections"
+  ],
+  "max_page_size": 200,
   "bucket_seconds": 60,
-  "retention_seconds": 2592000
+  "retention_seconds": 2592000,
+  "target_available_from": "2026-07-25T12:00:00Z"
 }
 ```
+
+历史存储尚未初始化时，`target_available_from` 为空字符串。最初的域名采集
+起点超出保留期后，该值会随保留期窗口向前移动。
 
 ### 查询
 
@@ -164,29 +190,49 @@ curl \
 {
   "from": "2026-07-25T00:00:00Z",
   "to": "2026-07-26T00:00:00Z",
+  "group_by": "destination_domain",
   "route_tags": ["AI"],
+  "group_tags": ["AI-Auto"],
   "actual_outbound_tags": ["ai-node"],
+  "destination_domains": ["api.openai.com"],
   "networks": ["tcp", "udp"],
-  "limit": 500
+  "search": "openai",
+  "sort_by": "total_bytes",
+  "sort_order": "desc",
+  "page": 1,
+  "page_size": 50
 }
 ```
 
-`from` 和 `to` 是可选的 RFC 3339 时间戳；两者同时存在时必须满足
-`from < to`。每个过滤字段都是精确匹配的允许列表。省略或传入空列表表示接受
-全部值；不同过滤字段之间按 AND 组合。每个过滤字段最多接受 256 个值，每个值
-最多 1024 个 UTF-8 字节；`networks` 只接受 `tcp` 和 `udp`。
+`from` 与 `to` 是可选的 RFC 3339 时间戳，同时存在时必须满足 `from < to`。
+五个列表过滤字段都是精确匹配允许列表，并按 AND 组合。`group_tags` 匹配
+`outbound_group`，不会匹配 `group_path` 中的每一级祖先。域名过滤值会按存储
+域名的规则规范化；空字符串显式选择 target 可用时段内没有域名的流量。每个过滤
+字段最多接受 256 个值，每个值最多 1024 个 UTF-8 字节；`networks` 只接受
+`tcp` 与 `udp`。
 
-查询结果会跨所有重叠的 1 分钟时间桶按维度汇总，而不返回逐桶时间序列。
-`actual_from` 和 `actual_to` 表示实际参与匹配结果的完整时间桶范围，因此可能
-超出请求时间戳的精确边界。
+`search` 对当前聚合标签执行不区分大小写的子串匹配：分别是页面显示的路由路径、
+目标域名、节点组或叶子出站 tag。搜索在聚合之后、计算 totals 与分页之前执行。
 
-结果按 `uplink_bytes + downlink_bytes` 从大到小排列。默认限制为 500 行，
-允许的最大限制为 5000 行。省略 limit 或传入 0 时使用默认值；负数或超过
-5000 的 limit 会被拒绝。
+服务端依次执行过滤、聚合、搜索、稳定排序，最后才分页。`sort_by` 接受
+capabilities 声明的字段，`sort_order` 为 `asc` 或 `desc`。默认按
+`total_bytes` 降序。数值相同时使用确定性的维度/名称顺序打破平局，因此在同一
+数据快照下分页边界稳定。
+
+`page` 从 1 开始，默认为 1。`page_size` 默认为 50，最大为 200。
+`total_rows` 是过滤与搜索之后、分页之前的总行数；`totals` 同样覆盖全部这些
+行，而不只是当前页。
+
+响应示例：
 
 ```json
 {
-  "actual_from": "2026-07-25T00:00:00Z",
+  "group_by": "destination_domain",
+  "page": 1,
+  "page_size": 50,
+  "total_rows": 1,
+  "target_available_from": "2026-07-25T12:00:00Z",
+  "actual_from": "2026-07-25T12:00:00Z",
   "actual_to": "2026-07-26T00:00:00Z",
   "totals": {
     "uplink_bytes": "12345",
@@ -195,38 +241,23 @@ curl \
   },
   "rows": [
     {
-      "config_revision": "81dc9bdb52d04dc20036dbd8313ed055",
-      "route_tag": "AI",
-      "group_path": ["AI", "AI-Auto"],
-      "actual_outbound_tag": "ai-node",
-      "actual_outbound_type": "vmess",
-      "network": "tcp",
+      "config_revision": "",
+      "route_tag": "",
+      "group_path": [],
+      "destination_domain": "api.openai.com",
+      "outbound_group": "",
+      "actual_outbound_tag": "",
+      "actual_outbound_type": "",
+      "network": "",
       "uplink_bytes": "12345",
       "downlink_bytes": "67890",
       "connections": "12"
     }
-  ],
-  "truncated": false
+  ]
 }
 ```
 
 计数器使用十进制 JSON 字符串，避免 JavaScript 客户端丢失 64 位整数精度。
-
-空结果为：
-
-```json
-{
-  "totals": {
-    "uplink_bytes": "0",
-    "downlink_bytes": "0",
-    "connections": "0"
-  },
-  "rows": [],
-  "truncated": false
-}
-```
-
-没有行匹配时会省略 `actual_from` 与 `actual_to`。当匹配行数超过生效的 limit
-时，只返回流量最大的若干行，并将 `truncated` 设为 `true`。`totals` 在应用
-limit 之前根据全部匹配行计算，因此即使明细行被截断，它仍是完整汇总。目前没有
-分页；需要每一行明细时，请提高 limit 或缩小过滤范围。
+没有行匹配时，`actual_from` 与 `actual_to` 为空字符串。对于依赖 target detail
+的查询，它们的范围与 totals 只覆盖 `target_available_from` 之后可用的域名
+明细。

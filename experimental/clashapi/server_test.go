@@ -54,7 +54,7 @@ func TestTrafficHistoryAPIAuthentication(t *testing.T) {
 				router.Use(authentication(testCase.secret))
 				mountTrafficHistoryAPI(router, testCase.history)
 			})
-			request := httptest.NewRequest(http.MethodGet, "/mbox/v1/traffic/capabilities", nil)
+			request := httptest.NewRequest(http.MethodGet, "/mbox/v2/traffic/capabilities", nil)
 			if testCase.authorization != "" {
 				request.Header.Set("Authorization", testCase.authorization)
 			}
