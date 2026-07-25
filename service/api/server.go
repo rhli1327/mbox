@@ -78,18 +78,10 @@ func (s *Service) Start(stage adapter.StartStage) error {
 	}
 	s.startedService = daemon.NewAttachedService(s.ctx)
 	s.grpcServer = daemon.NewServer(s.startedService, s.options.Secret)
-	var trafficHandler http.Handler
-	if trafficHistory := service.PtrFromContext[trafficcontrol.History](s.ctx); trafficHistory != nil {
-		if s.options.Secret != "" {
-			trafficHandler = http.StripPrefix(
-				"/mbox/v1/traffic",
-				trafficcontrol.NewHistoryHTTPHandler(trafficHistory),
-			)
-			trafficHandler = authenticateHTTP(s.options.Secret, trafficHandler)
-		} else {
-			s.logger.Warn("traffic statistics API is disabled: API service secret is empty")
-		}
-	}
+	trafficHandler := newTrafficHistoryHTTPHandler(
+		s.options.Secret,
+		service.PtrFromContext[trafficcontrol.History](s.ctx),
+	)
 	if s.dashboard != nil {
 		err := s.dashboard.start()
 		if err != nil {
@@ -148,4 +140,15 @@ func (s *Service) Close() error {
 		common.PtrOrNil(s.listener),
 		s.tlsConfig,
 	)
+}
+
+func newTrafficHistoryHTTPHandler(secret string, history *trafficcontrol.History) http.Handler {
+	if history == nil {
+		return nil
+	}
+	handler := http.StripPrefix(
+		"/mbox/v1/traffic",
+		trafficcontrol.NewHistoryHTTPHandler(history),
+	)
+	return authenticateHTTP(secret, handler)
 }

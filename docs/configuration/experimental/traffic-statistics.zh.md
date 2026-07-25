@@ -23,9 +23,9 @@
 
 启用流量统计采集与持久化。
 
-只有启用此选项，并且对应的 [Clash API](./clash-api/) 监听器或
-[sing-box API 服务](../service/api/)配置了非空 secret 时，才会挂载 REST
-端点。
+启用此选项后，每个已配置的 [Clash API](./clash-api/) 监听器或
+[sing-box API 服务](../service/api/)都会挂载 REST 端点。监听器的 secret
+非空时，端点沿用该监听器现有的鉴权；secret 为空时，端点不要求鉴权。
 
 #### path
 
@@ -116,19 +116,23 @@ capabilities 端点读取 `bucket_seconds` 和 `retention_seconds`，不能硬�
 
 | 监听器 | 配置 | 鉴权 |
 |--------|------|------|
-| Clash API | `experimental.clash_api.external_controller` | `Authorization: Bearer <secret>`，密钥取自 `experimental.clash_api.secret`。 |
-| 原生 sing-box API | 顶层 `"type": "api"` 服务 | `Authorization: Bearer <secret>`，密钥取自该 API 服务的 `secret`。 |
+| Clash API | `experimental.clash_api.external_controller` | `experimental.clash_api.secret` 非空时使用 `Authorization: Bearer <secret>`；为空时不鉴权。 |
+| 原生 sing-box API | 顶层 `"type": "api"` 服务 | 该 API 服务的 `secret` 非空时使用 `Authorization: Bearer <secret>`；为空时不鉴权。 |
 
-对应监听器的 secret 为空时，不会在该监听器上挂载流量统计资源；监听器上的其他
-资源仍沿用原有鉴权行为。
+!!! warning
 
-例如：
+    流量历史会暴露用量以及路由、分组和实际出站标签。监听器 secret 为空时，
+    应只监听回环地址或可信私网，不要直接暴露到互联网。
+
+配置了 secret 时，例如：
 
 ```bash
 curl \
   -H 'Authorization: Bearer change-me' \
   http://127.0.0.1:9090/mbox/v1/traffic/capabilities
 ```
+
+监听器 secret 为空时省略 `Authorization` 请求头。
 
 当前 capabilities 响应类似：
 

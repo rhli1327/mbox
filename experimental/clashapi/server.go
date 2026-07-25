@@ -135,16 +135,7 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		r.Mount("/profile", profileRouter())
 		r.Mount("/cache", cacheRouter(ctx))
 		r.Mount("/dns", dnsRouter(s.dnsRouter))
-		if trafficHistory := service.PtrFromContext[trafficcontrol.History](ctx); trafficHistory != nil {
-			if options.Secret != "" {
-				r.Mount(
-					"/mbox/v1/traffic",
-					http.StripPrefix("/mbox/v1/traffic", trafficcontrol.NewHistoryHTTPHandler(trafficHistory)),
-				)
-			} else {
-				s.logger.Warn("traffic statistics API is disabled: Clash API secret is empty")
-			}
-		}
+		mountTrafficHistoryAPI(r, service.PtrFromContext[trafficcontrol.History](ctx))
 
 		s.setupMetaAPI(r)
 	})
@@ -256,6 +247,16 @@ func (s *Server) SetMode(newMode string) {
 		}
 	}
 	s.logger.Info("updated mode: ", newMode)
+}
+
+func mountTrafficHistoryAPI(router chi.Router, history *trafficcontrol.History) {
+	if history == nil {
+		return
+	}
+	router.Mount(
+		"/mbox/v1/traffic",
+		http.StripPrefix("/mbox/v1/traffic", trafficcontrol.NewHistoryHTTPHandler(history)),
+	)
 }
 
 func authentication(serverSecret string) func(next http.Handler) http.Handler {

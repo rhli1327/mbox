@@ -24,9 +24,11 @@ Configure this object at `experimental.traffic_statistics`.
 
 Enable traffic statistics collection and persistence.
 
-The REST endpoints are mounted only when this option is enabled and the
-corresponding [Clash API](./clash-api/) listener or
-[sing-box API service](../service/api/) has a non-empty secret.
+When this option is enabled, the REST endpoints are mounted on each configured
+[Clash API](./clash-api/) listener or
+[sing-box API service](../service/api/). A non-empty listener secret protects
+the endpoints with the listener's existing authentication; an empty secret
+leaves them unauthenticated.
 
 #### path
 
@@ -130,20 +132,24 @@ The listener and authentication source differ:
 
 | Listener | Configuration | Authentication |
 |----------|---------------|----------------|
-| Clash API | `experimental.clash_api.external_controller` | `Authorization: Bearer <secret>`, using `experimental.clash_api.secret`. |
-| Native sing-box API | A top-level service with `"type": "api"` | `Authorization: Bearer <secret>`, using that API service's `secret`. |
+| Clash API | `experimental.clash_api.external_controller` | `Authorization: Bearer <secret>` when `experimental.clash_api.secret` is non-empty; otherwise none. |
+| Native sing-box API | A top-level service with `"type": "api"` | `Authorization: Bearer <secret>` when that API service's `secret` is non-empty; otherwise none. |
 
-If a listener's secret is empty, the traffic-statistics resources are not
-mounted on that listener. Other resources on the listener keep their existing
-authentication behavior.
+!!! warning
 
-For example:
+    Traffic history exposes usage together with route, group, and actual
+    outbound labels. If a listener has an empty secret, restrict it to loopback
+    or a trusted private network and do not expose it directly to the Internet.
+
+For example, when a secret is configured:
 
 ```bash
 curl \
   -H 'Authorization: Bearer change-me' \
   http://127.0.0.1:9090/mbox/v1/traffic/capabilities
 ```
+
+Omit the `Authorization` header when the listener secret is empty.
 
 The current capabilities response is similar to:
 
