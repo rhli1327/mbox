@@ -38,24 +38,24 @@ prepare_apk_root
 trap 'rm -rf "$ROOT_DIR" "$APK_ROOT_DIR"' EXIT
 
 # Binary
-install -Dm755 "$BINARY_PATH" "$ROOT_DIR/usr/bin/sing-box"
+install -Dm755 "$BINARY_PATH" "$ROOT_DIR/usr/bin/mbox"
 
 # Config files
-install -Dm644 "$PROJECT/release/config/config.json" "$ROOT_DIR/etc/sing-box/config.json"
-install -Dm755 "$PROJECT/release/config/sing-box.initd" "$ROOT_DIR/etc/init.d/sing-box"
-install -Dm644 "$PROJECT/release/config/sing-box.confd" "$ROOT_DIR/etc/conf.d/sing-box"
+install -Dm644 "$PROJECT/release/config/config.json" "$ROOT_DIR/etc/mbox/config.json"
+install -Dm755 "$PROJECT/release/config/mbox.initd" "$ROOT_DIR/etc/init.d/mbox"
+install -Dm644 "$PROJECT/release/config/mbox.confd" "$ROOT_DIR/etc/conf.d/mbox"
 
 # Service files
-install -Dm644 "$PROJECT/release/config/sing-box.service" "$ROOT_DIR/usr/lib/systemd/system/sing-box.service"
-install -Dm644 "$PROJECT/release/config/sing-box@.service" "$ROOT_DIR/usr/lib/systemd/system/sing-box@.service"
+install -Dm644 "$PROJECT/release/config/mbox.service" "$ROOT_DIR/usr/lib/systemd/system/mbox.service"
+install -Dm644 "$PROJECT/release/config/mbox@.service" "$ROOT_DIR/usr/lib/systemd/system/mbox@.service"
 
 # Completions
-install -Dm644 "$PROJECT/release/completions/sing-box.bash" "$ROOT_DIR/usr/share/bash-completion/completions/sing-box.bash"
-install -Dm644 "$PROJECT/release/completions/sing-box.fish" "$ROOT_DIR/usr/share/fish/vendor_completions.d/sing-box.fish"
-install -Dm644 "$PROJECT/release/completions/sing-box.zsh" "$ROOT_DIR/usr/share/zsh/site-functions/_sing-box"
+install -Dm644 "$PROJECT/release/completions/mbox.bash" "$ROOT_DIR/usr/share/bash-completion/completions/mbox.bash"
+install -Dm644 "$PROJECT/release/completions/mbox.fish" "$ROOT_DIR/usr/share/fish/vendor_completions.d/mbox.fish"
+install -Dm644 "$PROJECT/release/completions/mbox.zsh" "$ROOT_DIR/usr/share/zsh/site-functions/_mbox"
 
 # License
-install -Dm644 "$PROJECT/LICENSE" "$ROOT_DIR/usr/share/licenses/sing-box/LICENSE"
+install -Dm644 "$PROJECT/LICENSE" "$ROOT_DIR/usr/share/licenses/mbox/LICENSE"
 
 # APK metadata
 PACKAGES_DIR="$ROOT_DIR/lib/apk/packages"
@@ -63,9 +63,9 @@ mkdir -p "$PACKAGES_DIR"
 
 # .conffiles
 cat > "$PACKAGES_DIR/.conffiles" <<'EOF'
-/etc/conf.d/sing-box
-/etc/init.d/sing-box
-/etc/sing-box/config.json
+/etc/conf.d/mbox
+/etc/init.d/mbox
+/etc/mbox/config.json
 EOF
 
 # .conffiles_static (sha256 checksums)
@@ -82,13 +82,13 @@ done < "$PACKAGES_DIR/.conffiles" > "$PACKAGES_DIR/.conffiles_static"
 
 # Build APK
 apk --root "$APK_ROOT_DIR" mkpkg \
-  --info "name:sing-box" \
+  --info "name:mbox" \
   --info "version:${APK_VERSION}" \
   --info "description:The universal proxy platform." \
   --info "arch:${ARCHITECTURE}" \
   --info "license:GPL-3.0-or-later with name use or association addition" \
-  --info "origin:sing-box" \
-  --info "url:https://sing-box.sagernet.org/" \
+  --info "origin:mbox" \
+  --info "url:https://github.com/rhli1327/mbox" \
   --info "maintainer:nekohasekai <contact-git@sekai.icu>" \
   --files "$ROOT_DIR" \
   --output "$OUTPUT_PATH"

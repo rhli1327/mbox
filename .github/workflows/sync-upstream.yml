@@ -1,0 +1,62 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream-mieru
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Sync enfein/mbox mieru
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          fetch-depth: 0
+          ref: mieru
+
+      - name: Merge upstream
+        id: merge
+        run: |
+          set -xeuo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/enfein/mbox.git
+          git fetch upstream mieru --tags --force
+          git checkout -B sync-upstream-mieru
+          git merge --no-edit upstream/mieru
+          if git diff --quiet origin/mieru...HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push sync branch
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          set -xeuo pipefail
+          git push --force-with-lease origin sync-upstream-mieru
+
+      - name: Create pull request
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -xeuo pipefail
+          gh pr create \
+            --base mieru \
+            --head sync-upstream-mieru \
+            --title "sync: merge enfein/mbox mieru" \
+            --body "Automated upstream sync from enfein/mbox@mieru." \
+          || gh pr edit sync-upstream-mieru \
+            --title "sync: merge enfein/mbox mieru" \
+            --body "Automated upstream sync from enfein/mbox@mieru."

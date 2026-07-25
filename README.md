@@ -1,12 +1,104 @@
-# sing-box
+# mbox
 
-The universal proxy platform.
+A reference implementation of [mieru](https://github.com/enfein/mieru) protocol
+in sing-box.
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/sing-box.svg)](https://repology.org/project/sing-box/versions)
+We don't guarantee all sing-box features are working. We recommend you maintain
+your own fork.
 
-## Documentation
+## Fork Scope
 
-https://sing-box.sagernet.org
+This fork tracks [enfein/mbox](https://github.com/enfein/mbox) on the `mieru`
+branch, which itself is based on [SagerNet/sing-box](https://github.com/SagerNet/sing-box).
+Compared with upstream `enfein/mbox`, this fork is primarily a packaging and
+release fork:
+
+- Build artifacts, packages, service files, completions, and Docker entrypoints
+  are named `mbox` instead of `sing-box`.
+- GitHub Actions are scoped to publish only Linux `amd64` and `arm64` binaries.
+- The module path and internal Go imports remain `github.com/sagernet/sing-box`
+  to reduce merge conflicts when syncing upstream changes.
+- Upstream changes are synced from `enfein/mbox` by an automated pull request
+  workflow instead of being pushed directly into `mieru`.
+
+## Example Configuration with mieru Outbound (Proxy Client)
+
+```js
+{
+    "inbounds": [
+        {
+            "type": "mixed",
+            "tag": "mixed-in",
+            "listen": "0.0.0.0",
+            "listen_port": 1080
+        }
+    ],
+    "outbounds": [
+        {
+            "type": "mieru",
+            "tag": "mieru-out",
+            "server": "127.0.0.1",
+            "server_port": 8964,
+            "transport": "TCP",
+            "username": "baozi",
+            "password": "manlianpenfen",
+            "traffic_pattern": "GgQIARAK"
+        }
+    ],
+    "route": {
+        "rules": [
+            {
+                "inbound": ["mixed-in"],
+                "action": "route",
+                "outbound": "mieru-out"
+            }
+        ]
+    },
+    "log": {
+        "level": "warn"
+    }
+}
+```
+
+You can also use `server_ports` to set a list of port ranges.
+
+## Example Configuration with mieru Inbound (Proxy Server)
+
+```js
+{
+    "inbounds": [
+        {
+            "type": "mieru",
+            "tag": "mieru-tcp",
+            "listen": "0.0.0.0",
+            "listen_port": 8964,
+            "transport": "TCP",
+            "users": [
+                {
+                    "name": "baozi",
+                    "password": "manlianpenfen"
+                }
+            ],
+            "traffic_pattern": "GgQIARAK",
+            "user_hint_is_mandatory": false
+        }
+    ],
+    "outbounds": [],
+    "route": {},
+    "log": {
+        "level": "warn"
+    }
+}
+```
+
+## Branches
+
+- `mieru` branch has the latest code based on recent upstream releases. It may not be stable.
+- `release-*` branches record the references where binaries are published. Those branches don't change after creation.
+
+## Limitations
+
+- UDP outbound can't use domain name as server address.
 
 ## License
 

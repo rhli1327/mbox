@@ -4,11 +4,11 @@ set -e -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BINARY_NAME="sing-box"
+BINARY_NAME="mbox"
 
 INSTALL_BIN_PATH="/usr/local/bin"
-INSTALL_CONFIG_PATH="/usr/local/etc/sing-box"
-INSTALL_DATA_PATH="/var/lib/sing-box"
+INSTALL_CONFIG_PATH="/usr/local/etc/mbox"
+INSTALL_DATA_PATH="/var/lib/mbox"
 SYSTEMD_SERVICE_PATH="/etc/systemd/system"
 
 DEFAULT_BUILD_TAGS="$(cat "$PROJECT_DIR/release/DEFAULT_BUILD_TAGS_OTHERS")"
@@ -54,10 +54,10 @@ build_sing_box() {
     local ldflags
     ldflags=$(get_ldflags)
 
-    echo "Building sing-box with tags: $tags"
+    echo "Building mbox with tags: $tags"
     cd "$PROJECT_DIR"
     export GOTOOLCHAIN=local
-    go install -v -trimpath -ldflags "$ldflags" -tags "$tags" ./cmd/sing-box
+    go build -v -trimpath -o "$(go env GOPATH)/bin/$BINARY_NAME" -ldflags "$ldflags" -tags "$tags" ./cmd/sing-box
 }
 
 install_binary() {
@@ -80,23 +80,23 @@ setup_config() {
 
 setup_systemd() {
     echo "Setting up systemd service"
-    sudo cp "$SCRIPT_DIR/sing-box.service" "$SYSTEMD_SERVICE_PATH/"
+    sudo cp "$SCRIPT_DIR/mbox.service" "$SYSTEMD_SERVICE_PATH/"
     sudo systemctl daemon-reload
 }
 
 stop_service() {
-    if systemctl is-active --quiet sing-box; then
-        echo "Stopping sing-box service"
-        sudo systemctl stop sing-box
+    if systemctl is-active --quiet mbox; then
+        echo "Stopping mbox service"
+        sudo systemctl stop mbox
     fi
 }
 
 start_service() {
-    echo "Starting sing-box service"
-    sudo systemctl start sing-box
+    echo "Starting mbox service"
+    sudo systemctl start mbox
 }
 
 restart_service() {
-    echo "Restarting sing-box service"
-    sudo systemctl restart sing-box
+    echo "Restarting mbox service"
+    sudo systemctl restart mbox
 }

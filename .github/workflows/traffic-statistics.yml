@@ -37,13 +37,13 @@ jobs:
           GOARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          archive_name="sing-box-traffic-statistics_linux_${GOARCH}"
+          archive_name="mbox-traffic-statistics_linux_${GOARCH}"
           version="traffic-${GITHUB_SHA::7}"
           tags="$(cat release/DEFAULT_BUILD_TAGS_OTHERS)"
           ldflags="$(cat release/LDFLAGS)"
           mkdir -p "dist/${archive_name}"
           go build -v -trimpath \
-            -o "dist/${archive_name}/sing-box" \
+            -o "dist/${archive_name}/mbox" \
             -tags "$tags" \
             -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${version}' ${ldflags} -s -w -buildid=" \
             ./cmd/sing-box
@@ -55,7 +55,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: sing-box-traffic-statistics-linux-${{ matrix.arch }}
+          name: mbox-traffic-statistics-linux-${{ matrix.arch }}
           path: |
             dist/*.tar.gz
             dist/*.sha256
@@ -88,12 +88,12 @@ jobs:
           if gh release view traffic-statistics-latest >/dev/null 2>&1; then
             gh release upload traffic-statistics-latest dist/* --clobber
             gh release edit traffic-statistics-latest \
-              --title "Traffic statistics build" \
+              --title "mbox traffic statistics build" \
               --notes "Rolling Linux amd64/arm64 build from the traffic-statistics branch." \
               --prerelease
           else
             gh release create traffic-statistics-latest dist/* \
-              --title "Traffic statistics build" \
+              --title "mbox traffic statistics build" \
               --notes "Rolling Linux amd64/arm64 build from the traffic-statistics branch." \
               --prerelease
           fi

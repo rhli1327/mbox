@@ -134,7 +134,7 @@ jobs:
         run: |
           set -xeuo pipefail
           mkdir -p dist
-          go build -v -trimpath -o dist/sing-box -tags "${BUILD_TAGS}" \
+          go build -v -trimpath -o dist/mbox -tags "${BUILD_TAGS}" \
           -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${{ needs.calculate_version.outputs.version }}' ${LDFLAGS_SHARED} -s -w -buildid=" \
           ./cmd/sing-box
         env:
@@ -150,7 +150,7 @@ jobs:
         run: |
           set -xeuo pipefail
           mkdir -p dist
-          go build -v -trimpath -o dist/sing-box -tags "${BUILD_TAGS}" \
+          go build -v -trimpath -o dist/mbox -tags "${BUILD_TAGS}" \
           -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${{ needs.calculate_version.outputs.version }}' ${LDFLAGS_SHARED} -s -w -buildid=" \
           ./cmd/sing-box
         env:
@@ -161,7 +161,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Set mtime
         run: |-
-          TZ=UTC touch -t '197001010000' dist/sing-box
+          TZ=UTC touch -t '197001010000' dist/mbox
       - name: Detect track
         run: bash .github/detect_track.sh
       - name: Set version
@@ -181,12 +181,14 @@ jobs:
             -v "$PKG_VERSION" \
             -p "dist/${NAME}_${{ needs.calculate_version.outputs.version }}_linux_${{ matrix.debian }}.deb" \
             --architecture ${{ matrix.debian }} \
-            dist/sing-box=/usr/bin/sing-box
-          rm -rf $HOME/.gnupg
-          gpg --pinentry-mode loopback --passphrase "${{ secrets.GPG_PASSPHRASE }}" --import <<EOF
-          ${{ secrets.GPG_KEY }}
-          EOF
-          debsigs --sign=origin -k ${{ secrets.GPG_KEY_ID }} --gpgopts '--pinentry-mode loopback --passphrase "${{ secrets.GPG_PASSPHRASE }}"' dist/*.deb
+            dist/mbox=/usr/bin/mbox
+          # curl -Lo '/tmp/debsigs.diff' 'https://gitlab.com/debsigs/debsigs/-/commit/160138f5de1ec110376d3c807b60a37388bc7c90.diff'
+          # sudo patch /usr/bin/debsigs < '/tmp/debsigs.diff'
+          # rm -rf $HOME/.gnupg
+          # gpg --pinentry-mode loopback --passphrase "${{ secrets.GPG_PASSPHRASE }}" --import <<EOF
+          # ${{ secrets.GPG_KEY }}
+          # EOF
+          # debsigs --sign=origin -k ${{ secrets.GPG_KEY_ID }} --gpgopts '--pinentry-mode loopback --passphrase "${{ secrets.GPG_PASSPHRASE }}"' dist/*.deb
       - name: Package RPM
         if: matrix.rpm != ''
         run: |-
@@ -198,17 +200,17 @@ jobs:
             -v "$PKG_VERSION" \
             -p "dist/${NAME}_${{ needs.calculate_version.outputs.version }}_linux_${{ matrix.rpm }}.rpm" \
             --architecture ${{ matrix.rpm }} \
-            dist/sing-box=/usr/bin/sing-box
-          cat > $HOME/.rpmmacros <<EOF
-          %_gpg_name ${{ secrets.GPG_KEY_ID }}
-          %_gpg_sign_cmd_extra_args --pinentry-mode loopback --passphrase ${{ secrets.GPG_PASSPHRASE }}
-          EOF
-          gpg --pinentry-mode loopback --passphrase "${{ secrets.GPG_PASSPHRASE }}" --import <<EOF
-          ${{ secrets.GPG_KEY }}
-          EOF
-          rpmsign --addsign dist/*.rpm
+            dist/mbox=/usr/bin/mbox
+          # cat > $HOME/.rpmmacros <<EOF
+          # %_gpg_name ${{ secrets.GPG_KEY_ID }}
+          # %_gpg_sign_cmd_extra_args --pinentry-mode loopback --passphrase ${{ secrets.GPG_PASSPHRASE }}
+          # EOF
+          # gpg --pinentry-mode loopback --passphrase "${{ secrets.GPG_PASSPHRASE }}" --import <<EOF
+          # ${{ secrets.GPG_KEY }}
+          # EOF
+          # rpmsign --addsign dist/*.rpm
       - name: Cleanup
-        run: rm dist/sing-box
+        run: rm dist/mbox
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

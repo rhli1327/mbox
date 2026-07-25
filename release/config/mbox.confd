@@ -1,0 +1,6 @@
+# /etc/conf.d/mbox: config file for /etc/init.d/mbox
+
+# mbox configuration path, could be file or directory
+# MBOX_CONFIG=/etc/mbox
+
+# MBOX_WORKDIR=/var/lib/mbox
