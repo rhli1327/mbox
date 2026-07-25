@@ -132,6 +132,11 @@ type OutboundGroup interface {
 	All() []string
 }
 
+type NetworkAwareOutboundGroup interface {
+	OutboundGroup
+	NowForNetwork(network string) string
+}
+
 type URLTestGroup interface {
 	OutboundGroup
 	URLTest(ctx context.Context) (map[string]uint16, error)

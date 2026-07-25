@@ -9,6 +9,7 @@ import (
 	boxService "github.com/sagernet/sing-box/adapter/service"
 	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/tls"
+	"github.com/sagernet/sing-box/common/trafficcontrol"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/daemon"
 	"github.com/sagernet/sing-box/log"
@@ -17,6 +18,7 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	N "github.com/sagernet/sing/common/network"
 	aTLS "github.com/sagernet/sing/common/tls"
+	"github.com/sagernet/sing/service"
 
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
@@ -76,6 +78,18 @@ func (s *Service) Start(stage adapter.StartStage) error {
 	}
 	s.startedService = daemon.NewAttachedService(s.ctx)
 	s.grpcServer = daemon.NewServer(s.startedService, s.options.Secret)
+	var trafficHandler http.Handler
+	if trafficHistory := service.PtrFromContext[trafficcontrol.History](s.ctx); trafficHistory != nil {
+		if s.options.Secret != "" {
+			trafficHandler = http.StripPrefix(
+				"/mbox/v1/traffic",
+				trafficcontrol.NewHistoryHTTPHandler(trafficHistory),
+			)
+			trafficHandler = authenticateHTTP(s.options.Secret, trafficHandler)
+		} else {
+			s.logger.Warn("traffic statistics API is disabled: API service secret is empty")
+		}
+	}
 	if s.dashboard != nil {
 		err := s.dashboard.start()
 		if err != nil {
@@ -83,7 +97,7 @@ func (s *Service) Start(stage adapter.StartStage) error {
 		}
 	}
 	s.httpServer = &http.Server{
-		Handler: h2c.NewHandler(newHTTPHandler(s.logger, s.grpcServer, s.options, s.dashboard), new(http2.Server)),
+		Handler: h2c.NewHandler(newHTTPHandler(s.logger, s.grpcServer, s.options, s.dashboard, trafficHandler), new(http2.Server)),
 		BaseContext: func(net.Listener) context.Context {
 			return s.ctx
 		},

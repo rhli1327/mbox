@@ -1,0 +1,99 @@
+name: Build traffic statistics channel
+
+on:
+  push:
+    branches:
+      - traffic-statistics
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: traffic-statistics-release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build linux/${{ matrix.arch }}
+    if: github.ref == 'refs/heads/traffic-statistics'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch:
+          - amd64
+          - arm64
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build archive
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          archive_name="sing-box-traffic-statistics_linux_${GOARCH}"
+          version="traffic-${GITHUB_SHA::7}"
+          tags="$(cat release/DEFAULT_BUILD_TAGS_OTHERS)"
+          ldflags="$(cat release/LDFLAGS)"
+          mkdir -p "dist/${archive_name}"
+          go build -v -trimpath \
+            -o "dist/${archive_name}/sing-box" \
+            -tags "$tags" \
+            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${version}' ${ldflags} -s -w -buildid=" \
+            ./cmd/sing-box
+          tar -C dist -czf "dist/${archive_name}.tar.gz" "$archive_name"
+          (
+            cd dist
+            sha256sum "${archive_name}.tar.gz" > "${archive_name}.tar.gz.sha256"
+          )
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sing-box-traffic-statistics-linux-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  publish:
+    name: Update rolling release
+    if: github.ref == 'refs/heads/traffic-statistics'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs:
+      - build
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish traffic-statistics release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git tag --force traffic-statistics-latest "$GITHUB_SHA"
+          git push origin refs/tags/traffic-statistics-latest --force
+
+          if gh release view traffic-statistics-latest >/dev/null 2>&1; then
+            gh release upload traffic-statistics-latest dist/* --clobber
+            gh release edit traffic-statistics-latest \
+              --title "Traffic statistics build" \
+              --notes "Rolling Linux amd64/arm64 build from the traffic-statistics branch." \
+              --prerelease
+          else
+            gh release create traffic-statistics-latest dist/* \
+              --title "Traffic statistics build" \
+              --notes "Rolling Linux amd64/arm64 build from the traffic-statistics branch." \
+              --prerelease
+          fi

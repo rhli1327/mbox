@@ -10,6 +10,7 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/sniff"
+	"github.com/sagernet/sing-box/common/trafficcontrol"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	R "github.com/sagernet/sing-box/route/rule"
@@ -163,6 +164,7 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 	for _, buffer := range buffers {
 		conn = bufio.NewCachedConn(conn, buffer)
 	}
+	ctx = trafficcontrol.ContextWithRouteTrace(ctx, selectedOutbound)
 	for _, tracker := range r.trackers {
 		conn = tracker.RoutedConnection(ctx, conn, metadata, selectedRule, selectedOutbound)
 	}
@@ -291,6 +293,7 @@ func (r *Router) routePacketConnection(ctx context.Context, conn N.PacketConn, m
 		conn = bufio.NewCachedPacketConn(conn, buffer.Buffer, buffer.Destination)
 		N.PutPacketBuffer(buffer)
 	}
+	ctx = trafficcontrol.ContextWithRouteTrace(ctx, selectedOutbound)
 	for _, tracker := range r.trackers {
 		conn = tracker.RoutedPacketConnection(ctx, conn, metadata, selectedRule, selectedOutbound)
 	}
@@ -441,15 +444,21 @@ func (r *Router) preMatchFlow(ctx context.Context, metadata *adapter.InboundCont
 			return continueResult
 		}
 	}
+	traceContext := trafficcontrol.ContextWithRouteTrace(ctx, outbound)
 	for range 8 {
 		group, isGroup := outbound.(adapter.OutboundGroup)
 		if !isGroup {
 			break
 		}
-		selectedOutbound, selectedLoaded := r.outbound.Outbound(group.Now())
+		selectedTag := group.Now()
+		if networkGroup, isNetworkGroup := group.(adapter.NetworkAwareOutboundGroup); isNetworkGroup {
+			selectedTag = networkGroup.NowForNetwork(metadata.Network)
+		}
+		selectedOutbound, selectedLoaded := r.outbound.Outbound(selectedTag)
 		if !selectedLoaded {
 			return continueResult
 		}
+		trafficcontrol.RecordOutboundSelection(traceContext, outbound, selectedOutbound)
 		outbound = selectedOutbound
 	}
 	if !common.Contains(outbound.Network(), metadata.Network) {
@@ -506,6 +515,7 @@ func (r *Router) preMatchFlow(ctx context.Context, metadata *adapter.InboundCont
 	}
 	r.logger.InfoContext(ctx, "pre-match: forward ", metadata.Network, " connection from ", metadata.Source.AddrString(), " to ", metadata.Destination.AddrString(), " via outbound/", outbound.Type(), "[", outbound.Tag(), "]")
 	metadataCopy := *metadata
+	ctx = traceContext
 	result.NewTracker = func() tun.FlowTracker {
 		flowTrackers := make([]tun.FlowTracker, 0, len(r.trackers)+1)
 		flowTrackers = append(flowTrackers, newFlowLogger(ctx, r.logger, metadataCopy, outbound))

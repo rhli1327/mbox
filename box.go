@@ -35,6 +35,7 @@ import (
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
+	"github.com/sagernet/sing/common/json"
 	"github.com/sagernet/sing/common/ntp"
 	"github.com/sagernet/sing/service"
 	"github.com/sagernet/sing/service/pause"
@@ -109,6 +110,10 @@ func Context(
 	return ctx
 }
 
+func marshalTrafficStatisticsConfig(ctx context.Context, options option.Options) ([]byte, error) {
+	return json.MarshalContext(ctx, options)
+}
+
 func New(options Options) (*Box, error) {
 	createdAt := time.Now()
 	ctx := options.Context
@@ -153,6 +158,7 @@ func New(options Options) (*Box, error) {
 	var needCacheFile bool
 	var needClashAPI bool
 	var needV2RayAPI bool
+	var needTrafficStatistics bool
 	if experimentalOptions.CacheFile != nil && experimentalOptions.CacheFile.Enabled || options.PlatformLogWriter != nil {
 		needCacheFile = true
 	}
@@ -161,6 +167,9 @@ func New(options Options) (*Box, error) {
 	}
 	if experimentalOptions.V2RayAPI != nil && experimentalOptions.V2RayAPI.Listen != "" {
 		needV2RayAPI = true
+	}
+	if experimentalOptions.TrafficStatistics != nil && experimentalOptions.TrafficStatistics.Enabled {
+		needTrafficStatistics = true
 	}
 	needAPIService := common.Any(options.Services, func(it option.Service) bool {
 		return it.Type == C.TypeAPI
@@ -242,8 +251,26 @@ func New(options Options) (*Box, error) {
 	if err != nil {
 		return nil, E.Cause(err, "initialize router")
 	}
-	if needClashAPI || needAPIService {
-		trafficManager := trafficcontrol.NewManager(outboundManager)
+	var trafficHistory *trafficcontrol.History
+	if needTrafficStatistics {
+		configContent, err := marshalTrafficStatisticsConfig(ctx, options.Options)
+		if err != nil {
+			return nil, E.Cause(err, "calculate traffic statistics config revision")
+		}
+		trafficOptions := common.PtrValueOrDefault(experimentalOptions.TrafficStatistics)
+		trafficHistory = trafficcontrol.NewHistory(ctx, logFactory.NewLogger("traffic-statistics"), trafficcontrol.HistoryOptions{
+			Path:          trafficOptions.Path,
+			ConfigContent: configContent,
+		})
+		service.MustRegisterPtr(ctx, trafficHistory)
+	}
+	if needClashAPI || needAPIService || needTrafficStatistics {
+		var trafficManager *trafficcontrol.Manager
+		if trafficHistory != nil {
+			trafficManager = trafficcontrol.NewManager(outboundManager, trafficHistory)
+		} else {
+			trafficManager = trafficcontrol.NewManager(outboundManager)
+		}
 		service.MustRegisterPtr(ctx, trafficManager)
 		router.AppendTracker(trafficManager)
 		internalServices = append(internalServices, trafficManager)
@@ -438,6 +465,9 @@ func New(options Options) (*Box, error) {
 			internalServices = append(internalServices, v2rayServer)
 			service.MustRegister[adapter.V2RayServer](ctx, v2rayServer)
 		}
+	}
+	if trafficHistory != nil {
+		internalServices = append(internalServices, trafficHistory)
 	}
 	if ntpOptions.Enabled {
 		if ntpOptions.WriteToSystem {

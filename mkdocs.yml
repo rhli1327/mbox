@@ -123,6 +123,7 @@ nav:
       - Experimental:
           - configuration/experimental/index.md
           - Cache File: configuration/experimental/cache-file.md
+          - Traffic Statistics: configuration/experimental/traffic-statistics.md
           - Clash API: configuration/experimental/clash-api.md
           - V2Ray API: configuration/experimental/v2ray-api.md
       - Shared:
@@ -300,6 +301,7 @@ plugins:
 
             Experimental: 实验性
             Cache File: 缓存文件
+            Traffic Statistics: 流量统计
 
             Shared: 通用
             Listen Fields: 监听字段

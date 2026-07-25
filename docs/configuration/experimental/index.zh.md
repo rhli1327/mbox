@@ -12,15 +12,17 @@
   "experimental": {
     "cache_file": {},
     "clash_api": {},
-    "v2ray_api": {}
+    "v2ray_api": {},
+    "traffic_statistics": {}
   }
 }
 ```
 
 ### 字段
 
-| 键            | 格式                       |
-|--------------|--------------------------|
-| `cache_file` | [缓存文件](./cache-file/)     |
-| `clash_api`  | [Clash API](./clash-api/) |
-| `v2ray_api`  | [V2Ray API](./v2ray-api/) |
+| 键                    | 格式                                      |
+|----------------------|------------------------------------------|
+| `cache_file`         | [缓存文件](./cache-file/)                      |
+| `clash_api`          | [Clash API](./clash-api/)                |
+| `v2ray_api`          | [V2Ray API](./v2ray-api/)                |
+| `traffic_statistics` | [流量统计](./traffic-statistics/)              |

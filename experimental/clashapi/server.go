@@ -135,6 +135,16 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		r.Mount("/profile", profileRouter())
 		r.Mount("/cache", cacheRouter(ctx))
 		r.Mount("/dns", dnsRouter(s.dnsRouter))
+		if trafficHistory := service.PtrFromContext[trafficcontrol.History](ctx); trafficHistory != nil {
+			if options.Secret != "" {
+				r.Mount(
+					"/mbox/v1/traffic",
+					http.StripPrefix("/mbox/v1/traffic", trafficcontrol.NewHistoryHTTPHandler(trafficHistory)),
+				)
+			} else {
+				s.logger.Warn("traffic statistics API is disabled: Clash API secret is empty")
+			}
+		}
 
 		s.setupMetaAPI(r)
 	})

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"io"
@@ -26,7 +27,7 @@ const (
 // (https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-WEB.md) and gRPC-Web
 // streams over WebSocket, wire compatible with the improbable-eng/grpc-web
 // client transports.
-func newHTTPHandler(logger log.ContextLogger, grpcServer *grpc.Server, options option.APIServiceOptions, dashboard *dashboard) http.Handler {
+func newHTTPHandler(logger log.ContextLogger, grpcServer *grpc.Server, options option.APIServiceOptions, dashboard *dashboard, trafficHandler http.Handler) http.Handler {
 	allowedOrigins := options.AccessControlAllowOrigin
 	if len(allowedOrigins) == 0 {
 		allowedOrigins = []string{"*"}
@@ -40,21 +41,25 @@ func newHTTPHandler(logger log.ContextLogger, grpcServer *grpc.Server, options o
 		MaxAge:              300,
 	})
 	return corsHandler.Handler(&webBridge{
-		logger:     logger,
-		grpcServer: grpcServer,
-		dashboard:  dashboard,
+		logger:         logger,
+		grpcServer:     grpcServer,
+		dashboard:      dashboard,
+		trafficHandler: trafficHandler,
 	})
 }
 
 type webBridge struct {
-	logger     log.ContextLogger
-	grpcServer *grpc.Server
-	dashboard  *dashboard
+	logger         log.ContextLogger
+	grpcServer     *grpc.Server
+	dashboard      *dashboard
+	trafficHandler http.Handler
 }
 
 func (b *webBridge) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	contentType := request.Header.Get("Content-Type")
 	switch {
+	case b.trafficHandler != nil && (request.URL.Path == "/mbox/v1/traffic" || strings.HasPrefix(request.URL.Path, "/mbox/v1/traffic/")):
+		b.trafficHandler.ServeHTTP(writer, request)
 	case isWebSocketGRPCRequest(request):
 		b.serveWebSocket(writer, request)
 	case request.Method == http.MethodPost && strings.HasPrefix(contentType, contentTypeGRPCWeb):
@@ -66,6 +71,24 @@ func (b *webBridge) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	default:
 		http.NotFound(writer, request)
 	}
+}
+
+func authenticateHTTP(secret string, next http.Handler) http.Handler {
+	if secret == "" {
+		return next
+	}
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		const bearerPrefix = "Bearer "
+		authorization := request.Header.Get("Authorization")
+		if !strings.HasPrefix(authorization, bearerPrefix) ||
+			subtle.ConstantTimeCompare([]byte(authorization[len(bearerPrefix):]), []byte(secret)) != 1 {
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusUnauthorized)
+			_, _ = writer.Write([]byte("{\"error\":\"unauthorized\"}\n"))
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 func (b *webBridge) serveWeb(writer http.ResponseWriter, request *http.Request) {

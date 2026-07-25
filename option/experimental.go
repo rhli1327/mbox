@@ -3,10 +3,16 @@ package option
 import "github.com/sagernet/sing/common/json/badoption"
 
 type ExperimentalOptions struct {
-	CacheFile *CacheFileOptions `json:"cache_file,omitempty"`
-	ClashAPI  *ClashAPIOptions  `json:"clash_api,omitempty"`
-	V2RayAPI  *V2RayAPIOptions  `json:"v2ray_api,omitempty"`
-	Debug     *DebugOptions     `json:"debug,omitempty"`
+	CacheFile         *CacheFileOptions         `json:"cache_file,omitempty"`
+	ClashAPI          *ClashAPIOptions          `json:"clash_api,omitempty"`
+	V2RayAPI          *V2RayAPIOptions          `json:"v2ray_api,omitempty"`
+	TrafficStatistics *TrafficStatisticsOptions `json:"traffic_statistics,omitempty"`
+	Debug             *DebugOptions             `json:"debug,omitempty"`
+}
+
+type TrafficStatisticsOptions struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	Path    string `json:"path,omitempty"`
 }
 
 type CacheFileOptions struct {
