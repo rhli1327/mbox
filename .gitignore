@@ -11,6 +11,7 @@
 /mbox
 /mbox.exe
 /build/
+/.cache/
 /*.jar
 /*.aar
 /*.xcframework/
