@@ -32,8 +32,24 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/enfein/mbox.git
           git fetch upstream mieru --tags --force
+
+          upstream_mieru=upstream/mieru
+          local_mieru_commit="$(git log origin/mieru --format=%H --grep='^feat: add mieru protocol$' -1)"
+          if [[ -z "$local_mieru_commit" ]]; then
+            echo "::error::Unable to find the local mieru integration commit."
+            exit 1
+          fi
+
+          upstream_patch_id="$(git show --pretty=format: "$upstream_mieru" | git patch-id --stable | cut -d' ' -f1)"
+          local_patch_id="$(git show --pretty=format: "$local_mieru_commit" | git patch-id --stable | cut -d' ' -f1)"
+          if [[ -z "$upstream_patch_id" || "$upstream_patch_id" != "$local_patch_id" ]]; then
+            echo "::error::The upstream mieru patch changed and requires manual review."
+            exit 1
+          fi
+
+          upstream_base="$(git rev-parse "${upstream_mieru}^")"
           git checkout -B sync-upstream-mieru
-          git merge --no-edit upstream/mieru
+          git merge --no-edit "$upstream_base"
           if git diff --quiet origin/mieru...HEAD; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
