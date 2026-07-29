@@ -102,8 +102,7 @@ func TestTargetAvailableFromRespectsRetention(t *testing.T) {
 		t.Fatalf("unexpected retention-clamped destination availability: got %v, want %v", actual, expected)
 	}
 	recent := now.Add(-time.Hour)
-	history.targetsFrom = recent
-	history.destinationsFrom = recent
+	setTestHistoryAvailability(history, recent, recent)
 	if actual := history.targetAvailableFromAt(now); !actual.Equal(recent) {
 		t.Fatalf("recent target availability changed: got %v, want %v", actual, recent)
 	}
@@ -112,9 +111,8 @@ func TestTargetAvailableFromRespectsRetention(t *testing.T) {
 	}
 }
 
-func TestHistoryPersistenceReopenAndFilters(t *testing.T) {
-	databasePath := filepath.Join(t.TempDir(), "traffic.db")
-	history := openTestHistory(t, databasePath, "revision-a")
+func runHistoryPersistenceReopenAndFilters(t *testing.T, harness historyBackendHarness) {
+	history := harness.Open(t, []byte("revision-a"))
 	revisionA := history.configRevision
 
 	aiMetadata := resolvedMetadata(
@@ -141,7 +139,19 @@ func TestHistoryPersistenceReopenAndFilters(t *testing.T) {
 		t.Fatal("close initial history:", err)
 	}
 
-	reopened := openTestHistory(t, databasePath, "revision-b")
+	sameConfiguration := harness.Open(t, []byte("revision-a"))
+	if sameConfiguration.configRevision != revisionA {
+		t.Fatalf(
+			"same backend identity and configuration changed revision: %q != %q",
+			sameConfiguration.configRevision,
+			revisionA,
+		)
+	}
+	if err := sameConfiguration.Close(); err != nil {
+		t.Fatal("close same-configuration history:", err)
+	}
+
+	reopened := harness.Open(t, []byte("revision-b"))
 	revisionB := reopened.configRevision
 	if revisionA == revisionB {
 		t.Fatal("different configuration inputs produced the same revision")
@@ -339,7 +349,7 @@ func TestHistoryKeepsLegacySummarySeparateFromTargetDetails(t *testing.T) {
 	if !bytes.Equal(currentDomainKeyContent, legacyDomainKeyContent) {
 		t.Fatalf("domain target key changed legacy encoding: %s != %s", currentDomainKeyContent, legacyDomainKeyContent)
 	}
-	err = history.db.Update(func(tx *bbolt.Tx) error {
+	err = testBoltStore(t, history).db.Update(func(tx *bbolt.Tx) error {
 		bucket, err := tx.CreateBucketIfNotExists(historyBucket)
 		if err != nil {
 			return err
@@ -425,7 +435,7 @@ func TestHistoryKeepsLegacySummarySeparateFromTargetDetails(t *testing.T) {
 	if err = history.flush(); err != nil {
 		t.Fatal("flush complete target bucket:", err)
 	}
-	err = history.db.View(func(tx *bbolt.Tx) error {
+	err = testBoltStore(t, history).db.View(func(tx *bbolt.Tx) error {
 		summary := tx.Bucket(historyBucket)
 		targets := tx.Bucket(historyTargetsBucket)
 		if summary == nil || targets == nil {
@@ -493,7 +503,7 @@ func TestHistoryMigratesDestinationAvailabilityWithoutFabricatingIP(t *testing.T
 	}
 	oldDomainKey := oldUnknownKey
 	oldDomainKey.DestinationDomain = "legacy.example"
-	err = history.db.Update(func(tx *bbolt.Tx) error {
+	err = testBoltStore(t, history).db.Update(func(tx *bbolt.Tx) error {
 		metadata := tx.Bucket(historyMetadataBucket)
 		if err := metadata.Put(historyTargetsFromKey, historyBucketKeyPrefix(oldTargetFrom.Unix())); err != nil {
 			return err
@@ -625,7 +635,7 @@ func TestHistoryDestinationAvailabilityDoesNotPrecedeFutureTargetBoundary(t *tes
 	databasePath := filepath.Join(t.TempDir(), "traffic.db")
 	history := openTestHistory(t, databasePath, "revision-destination-clock-rollback")
 	futureTargetFrom := time.Now().UTC().Truncate(HistoryBucketInterval).Add(time.Hour)
-	err := history.db.Update(func(tx *bbolt.Tx) error {
+	err := testBoltStore(t, history).db.Update(func(tx *bbolt.Tx) error {
 		metadata := tx.Bucket(historyMetadataBucket)
 		if err := metadata.Put(historyTargetsFromKey, historyBucketKeyPrefix(futureTargetFrom.Unix())); err != nil {
 			return err
@@ -657,10 +667,8 @@ func TestHistoryDestinationAvailabilityDoesNotPrecedeFutureTargetBoundary(t *tes
 	}
 }
 
-func TestHistoryGroupingsFilteringSearchSortingAndPagination(t *testing.T) {
-	history := openTestHistory(t, filepath.Join(t.TempDir(), "traffic.db"), "revision-query-v2")
-	history.targetsFrom = time.Now().UTC().Truncate(HistoryBucketInterval)
-	history.destinationsFrom = history.targetsFrom
+func runHistoryGroupingsFilteringSearchSortingAndPagination(t *testing.T, harness historyBackendHarness) {
+	history := harness.Open(t, []byte("revision-query-v2"))
 	defer func() {
 		if err := history.Close(); err != nil {
 			t.Error("close v2 query history:", err)
@@ -915,7 +923,8 @@ func TestHistoryGroupingsFilteringSearchSortingAndPagination(t *testing.T) {
 
 func TestHistorySortFields(t *testing.T) {
 	history := openTestHistory(t, filepath.Join(t.TempDir(), "traffic.db"), "revision-sort-fields")
-	history.targetsFrom = time.Now().UTC().Truncate(HistoryBucketInterval)
+	availableFrom := time.Now().UTC().Truncate(HistoryBucketInterval)
+	setTestHistoryAvailability(history, availableFrom, history.destinationsFrom)
 	defer func() {
 		if err := history.Close(); err != nil {
 			t.Error("close sort-fields history:", err)
@@ -1040,8 +1049,8 @@ func TestHistoryHTTPUsesDecimalStrings(t *testing.T) {
 
 func TestHistoryHTTPDestinationFallback(t *testing.T) {
 	history := openTestHistory(t, filepath.Join(t.TempDir(), "traffic.db"), "revision-http-destination")
-	history.targetsFrom = time.Now().UTC().Truncate(HistoryBucketInterval)
-	history.destinationsFrom = history.targetsFrom
+	availableFrom := time.Now().UTC().Truncate(HistoryBucketInterval)
+	setTestHistoryAvailability(history, availableFrom, availableFrom)
 	defer func() {
 		if err := history.Close(); err != nil {
 			t.Error("close HTTP destination history:", err)
@@ -1258,7 +1267,7 @@ func TestHistoryConfigRevisionIsStableOpaqueAndDatabaseLocal(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "traffic.db")
 	first := openTestHistory(t, databasePath, "secret-config-a")
 	revisionA := first.configRevision
-	if len(first.configContent) != 0 {
+	if len(testBoltStore(t, first).configContent) != 0 {
 		t.Fatal("history retained canonical configuration content after deriving its revision")
 	}
 	if _, err := hex.DecodeString(revisionA); err != nil || len(revisionA) != historyRevisionSize*2 {
@@ -1293,8 +1302,8 @@ func TestHistoryConfigRevisionIsStableOpaqueAndDatabaseLocal(t *testing.T) {
 	}
 }
 
-func TestHistoryQueryHonorsCancellation(t *testing.T) {
-	history := openTestHistory(t, filepath.Join(t.TempDir(), "traffic.db"), "revision-cancel")
+func runHistoryQueryHonorsCancellation(t *testing.T, harness historyBackendHarness) {
+	history := harness.Open(t, []byte("revision-cancel"))
 	defer func() {
 		if err := history.Close(); err != nil {
 			t.Error("close canceled-query history:", err)
@@ -1501,9 +1510,9 @@ func TestHistoryConcurrentCloseQueryAndRecord(t *testing.T) {
 	if accepting || pendingCount != 0 {
 		t.Fatalf("unexpected closed state: accepting=%v pending=%d", accepting, pendingCount)
 	}
-	history.flushAccess.Lock()
-	databaseOpen := history.db != nil
-	history.flushAccess.Unlock()
+	history.storeAccess.RLock()
+	databaseOpen := testBoltStore(t, history).db != nil
+	history.storeAccess.RUnlock()
 	if databaseOpen {
 		t.Fatal("history database remained open after concurrent Close")
 	}
@@ -1523,6 +1532,15 @@ func openTestHistory(t *testing.T, path string, revision string) *History {
 		t.Fatal("open history:", err)
 	}
 	return history
+}
+
+func testBoltStore(t *testing.T, history *History) *boltStore {
+	t.Helper()
+	store, loaded := history.store.(*boltStore)
+	if !loaded {
+		t.Fatalf("history store is %T, want *boltStore", history.store)
+	}
+	return store
 }
 
 type groupSelection struct {
@@ -1579,5 +1597,14 @@ func assertJSONString(t *testing.T, row map[string]json.RawMessage, key string, 
 	}
 	if actual != expected {
 		t.Fatalf("unexpected %s: got %q, want %q", key, actual, expected)
+	}
+}
+
+func setTestHistoryAvailability(history *History, targetsFrom time.Time, destinationsFrom time.Time) {
+	history.targetsFrom = targetsFrom
+	history.destinationsFrom = destinationsFrom
+	if store, ok := history.store.(*boltStore); ok {
+		store.targetsFrom = targetsFrom
+		store.destinationsFrom = destinationsFrom
 	}
 }

@@ -80,7 +80,7 @@ func (s *Service) Start(stage adapter.StartStage) error {
 	s.grpcServer = daemon.NewServer(s.startedService, s.options.Secret)
 	trafficHandler := newTrafficHistoryHTTPHandler(
 		s.options.Secret,
-		service.PtrFromContext[trafficcontrol.History](s.ctx),
+		service.FromContext[trafficcontrol.HistoryReader](s.ctx),
 	)
 	if s.dashboard != nil {
 		err := s.dashboard.start()
@@ -142,7 +142,7 @@ func (s *Service) Close() error {
 	)
 }
 
-func newTrafficHistoryHTTPHandler(secret string, history *trafficcontrol.History) http.Handler {
+func newTrafficHistoryHTTPHandler(secret string, history trafficcontrol.HistoryReader) http.Handler {
 	if history == nil {
 		return nil
 	}

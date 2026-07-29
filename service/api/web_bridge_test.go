@@ -80,7 +80,7 @@ func TestAuthenticateHTTPWithoutSecret(t *testing.T) {
 func TestTrafficHistoryHTTPHandlerAuthentication(t *testing.T) {
 	for _, testCase := range []struct {
 		name          string
-		history       *trafficcontrol.History
+		history       trafficcontrol.HistoryReader
 		secret        string
 		authorization string
 		statusCode    int

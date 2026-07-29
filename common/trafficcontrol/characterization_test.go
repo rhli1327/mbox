@@ -18,8 +18,8 @@ import (
 	N "github.com/sagernet/sing/common/network"
 )
 
-func TestHistoryPendingAndFlushedResultsAreEquivalent(t *testing.T) {
-	history := openTestHistory(t, filepath.Join(t.TempDir(), "traffic.db"), "pending-equivalence")
+func runHistoryPendingAndFlushedResultsAreEquivalent(t *testing.T, harness historyBackendHarness) {
+	history := harness.Open(t, []byte("pending-equivalence"))
 	defer func() {
 		if err := history.Close(); err != nil {
 			t.Error("close history:", err)
@@ -51,8 +51,6 @@ func TestHistoryPendingAndFlushedResultsAreEquivalent(t *testing.T) {
 	}
 
 	bucketStart := seed.ActualFrom
-	history.targetsFrom = bucketStart
-	history.destinationsFrom = bucketStart
 
 	query := HistoryQuery{
 		From:               bucketStart,
@@ -474,8 +472,7 @@ func closeCharacterizationHistory(t *testing.T, history *History) {
 
 func enableCurrentCharacterizationTargets(history *History) {
 	bucketStart := time.Now().UTC().Truncate(HistoryBucketInterval)
-	history.targetsFrom = bucketStart
-	history.destinationsFrom = bucketStart
+	setTestHistoryAvailability(history, bucketStart, bucketStart)
 }
 
 type characterizationPacketConn struct {

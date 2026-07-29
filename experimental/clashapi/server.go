@@ -135,7 +135,7 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		r.Mount("/profile", profileRouter())
 		r.Mount("/cache", cacheRouter(ctx))
 		r.Mount("/dns", dnsRouter(s.dnsRouter))
-		mountTrafficHistoryAPI(r, service.PtrFromContext[trafficcontrol.History](ctx))
+		mountTrafficHistoryAPI(r, service.FromContext[trafficcontrol.HistoryReader](ctx))
 
 		s.setupMetaAPI(r)
 	})
@@ -249,7 +249,7 @@ func (s *Server) SetMode(newMode string) {
 	s.logger.Info("updated mode: ", newMode)
 }
 
-func mountTrafficHistoryAPI(router chi.Router, history *trafficcontrol.History) {
+func mountTrafficHistoryAPI(router chi.Router, history trafficcontrol.HistoryReader) {
 	if history == nil {
 		return
 	}

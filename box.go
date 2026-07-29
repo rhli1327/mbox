@@ -263,6 +263,7 @@ func New(options Options) (*Box, error) {
 			ConfigContent: configContent,
 		})
 		service.MustRegisterPtr(ctx, trafficHistory)
+		service.MustRegister[trafficcontrol.HistoryReader](ctx, trafficHistory)
 	}
 	if needClashAPI || needAPIService || needTrafficStatistics {
 		var trafficManager *trafficcontrol.Manager

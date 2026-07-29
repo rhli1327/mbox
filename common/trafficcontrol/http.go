@@ -92,7 +92,7 @@ type queryResponseRow struct {
 	Connections        string   `json:"connections"`
 }
 
-func NewHistoryHTTPHandler(history *History) http.Handler {
+func NewHistoryHTTPHandler(history HistoryReader) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /capabilities", func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(writer, http.StatusOK, capabilitiesResponse{
@@ -195,6 +195,11 @@ func NewHistoryHTTPHandler(history *History) http.Handler {
 		}
 		if !query.From.IsZero() && !query.To.IsZero() && !query.From.Before(query.To) {
 			writeAPIError(writer, http.StatusBadRequest, "from must be before to")
+			return
+		}
+		query, err = normalizeHistoryQuery(query)
+		if err != nil {
+			writeAPIError(writer, http.StatusBadRequest, err.Error())
 			return
 		}
 		result, err := history.Query(request.Context(), query)
