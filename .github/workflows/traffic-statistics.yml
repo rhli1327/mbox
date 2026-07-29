@@ -4,19 +4,149 @@ on:
   push:
     branches:
       - traffic-statistics
+  pull_request:
+    branches:
+      - traffic-statistics
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: traffic-statistics-release
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  test:
+    name: Test traffic statistics
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.25.12
+          cache: true
+
+      - name: Install test prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tcpdump
+          sudo -n true
+
+      - name: Load repository build settings
+        run: |
+          set -euo pipefail
+          echo "BUILD_TAGS=$(cat release/DEFAULT_BUILD_TAGS_OTHERS)" >> "$GITHUB_ENV"
+          echo "LDFLAGS_SHARED=$(cat release/LDFLAGS)" >> "$GITHUB_ENV"
+
+      - name: Assert nested manifests are tidy
+        run: |
+          set -euo pipefail
+          (
+            cd test
+            env GOWORK=off GOTOOLCHAIN=local go mod tidy
+          )
+          git diff --exit-code -- \
+            go.mod \
+            go.sum \
+            test/go.mod \
+            test/go.sum
+
+      # The nested integration suite requires tcp-brutal, external-network access,
+      # and native Docker-host topology. This generic job verifies both test builds.
+      - name: Compile untagged nested test binary
+        run: |
+          set -euo pipefail
+          (
+            cd test
+            env GOWORK=off GOTOOLCHAIN=local \
+              go test \
+              -mod=readonly \
+              -count=1 \
+              -run '^$' \
+              .
+          )
+
+      - name: Compile release-tagged nested test binary
+        run: |
+          set -euo pipefail
+          (
+            cd test
+            env GOWORK=off GOTOOLCHAIN=local \
+              go test \
+              -mod=readonly \
+              -count=1 \
+              -run '^$' \
+              -tags "$BUILD_TAGS" \
+              -ldflags "$LDFLAGS_SHARED" \
+              .
+          )
+
+      - name: Test traffic statistics
+        run: |
+          set -euo pipefail
+          env GOWORK=off GOTOOLCHAIN=local \
+            go test \
+            -mod=readonly \
+            -count=1 \
+            ./common/trafficcontrol/... \
+            ./experimental/clashapi \
+            ./service/api \
+            .
+
+      - name: Test traffic accounting with race detector
+        run: |
+          set -euo pipefail
+          env GOWORK=off GOTOOLCHAIN=local \
+            go test \
+            -mod=readonly \
+            -count=1 \
+            -race \
+            ./common/trafficcontrol
+
+      - name: Test root module
+        run: |
+          set -euo pipefail
+          env GOWORK=off GOTOOLCHAIN=local \
+            go test \
+            -mod=readonly \
+            -count=1 \
+            -ldflags "$LDFLAGS_SHARED" \
+            ./...
+
+      - name: Test root module with release tags
+        run: |
+          set -euo pipefail
+          env GOWORK=off GOTOOLCHAIN=local \
+            go test \
+            -mod=readonly \
+            -count=1 \
+            -v \
+            -exec sudo \
+            -tags "$BUILD_TAGS" \
+            -ldflags "$LDFLAGS_SHARED" \
+            ./...
+
+      - name: Assert module manifests remain unchanged
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- \
+            go.mod \
+            go.sum \
+            test/go.mod \
+            test/go.sum
+
   build:
     name: Build Debian package (${{ matrix.debian_arch }})
-    if: github.ref == 'refs/heads/traffic-statistics'
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/traffic-statistics' }}
+    needs:
+      - test
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
