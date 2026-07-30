@@ -164,6 +164,7 @@ type postgresSpoolStore struct {
 	closeErr       error
 	readCalls      sync.WaitGroup
 	snapshots      map[*postgresSpoolStoreSnapshot]struct{}
+	commitProgress chan struct{}
 
 	statusAccess      sync.RWMutex
 	state             postgresSpoolState
@@ -203,6 +204,7 @@ func newPostgresSpoolStore(
 		cleanupCh:         make(chan struct{}, 1),
 		closeDone:         make(chan struct{}),
 		snapshots:         make(map[*postgresSpoolStoreSnapshot]struct{}),
+		commitProgress:    make(chan struct{}),
 		state:             postgresSpoolStateReady,
 		lastSpoolStatus:   spool.Status(),
 		lastErrorCategory: postgresSpoolErrorNone,
@@ -273,6 +275,7 @@ func (s *postgresSpoolStore) Close() error {
 	opening := s.opening
 	s.access.Unlock()
 
+	s.signalCommitProgress()
 	s.remote.Cancel()
 	if opening {
 		<-openDone
@@ -300,6 +303,7 @@ func (s *postgresSpoolStore) Close() error {
 	}
 	s.state = postgresSpoolStateClosed
 	s.nextRetry = time.Time{}
+	s.signalCommitProgressLocked()
 	s.statusAccess.Unlock()
 
 	s.access.Lock()
@@ -311,13 +315,20 @@ func (s *postgresSpoolStore) Close() error {
 }
 
 func (s *postgresSpoolStore) Write(batch historyBatch) error {
+	_, err := s.Commit(batch)
+	return err
+}
+
+func (s *postgresSpoolStore) Commit(
+	batch historyBatch,
+) (historyCommitBoundary, error) {
 	for {
 		s.revisionAccess.RLock()
 		s.access.Lock()
 		if s.closed {
 			s.access.Unlock()
 			s.revisionAccess.RUnlock()
-			return ErrSpoolClosed
+			return historyCommitBoundary{}, ErrSpoolClosed
 		}
 		if s.opening {
 			openDone := s.openDone
@@ -327,16 +338,18 @@ func (s *postgresSpoolStore) Write(batch historyBatch) error {
 			continue
 		}
 		normalized := normalizePostgresSpoolBatch(batch, s.configRevision)
-		if _, err := s.spool.Append(normalized); err != nil {
+		boundary, err := s.spool.Append(normalized)
+		if err != nil {
 			s.access.Unlock()
 			s.revisionAccess.RUnlock()
-			return err
+			return historyCommitBoundary{}, err
 		}
 		s.refreshSpoolStatus()
 		s.signal(s.wakeCh)
 		s.access.Unlock()
 		s.revisionAccess.RUnlock()
-		return nil
+		s.signalCommitProgress()
+		return boundary, nil
 	}
 }
 
@@ -411,6 +424,72 @@ func (s *postgresSpoolStore) BeginRead(
 	}
 }
 
+func (s *postgresSpoolStore) BeginReadCommitted(
+	ctx context.Context,
+	boundary historyCommitBoundary,
+) (historyStoreSnapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !boundary.Durable || boundary.LossDuringWrite {
+		return nil, ErrHistoryUnavailable
+	}
+	for {
+		s.statusAccess.RLock()
+		progress := s.commitProgress
+		s.statusAccess.RUnlock()
+
+		status := s.spool.Status()
+		s.statusAccess.RLock()
+		state := s.state
+		progressUnchanged := progress == s.commitProgress
+		s.statusAccess.RUnlock()
+		if !progressUnchanged {
+			continue
+		}
+		if status.FormatVersion == 0 ||
+			status.LossGeneration != boundary.LossGeneration ||
+			state == postgresSpoolStatePermanent ||
+			state == postgresSpoolStateClosed {
+			return nil, ErrHistoryUnavailable
+		}
+		if state == postgresSpoolStateReady &&
+			status.ResolvedSequence >= boundary.Sequence {
+			snapshot, err := s.BeginRead(ctx)
+			if err != nil {
+				return nil, postgresCommittedQueryError(ctx)
+			}
+			latest := s.spool.Status()
+			s.statusAccess.RLock()
+			latestState := s.state
+			s.statusAccess.RUnlock()
+			if latest.FormatVersion == 0 ||
+				latest.LossGeneration != boundary.LossGeneration ||
+				latest.ResolvedSequence < boundary.Sequence ||
+				latestState != postgresSpoolStateReady {
+				snapshot.Close()
+				return nil, ErrHistoryUnavailable
+			}
+			return snapshot, nil
+		}
+
+		s.access.Lock()
+		closed := s.closed
+		workerCtx := s.workerCtx
+		s.access.Unlock()
+		if closed || workerCtx == nil {
+			return nil, ErrHistoryUnavailable
+		}
+		select {
+		case <-ctx.Done():
+			return nil, postgresCommittedQueryError(ctx)
+		case <-workerCtx.Done():
+			return nil, ErrHistoryUnavailable
+		case <-progress:
+		}
+	}
+}
+
 func (s *postgresSpoolStore) Status() postgresSpoolStatus {
 	live := s.spool.Status()
 	s.statusAccess.RLock()
@@ -456,7 +535,11 @@ func (s *postgresSpoolStoreSnapshot) Query(
 		stopSnapshotCancel()
 		cancel()
 	}()
-	return s.snapshot.Query(queryCtx, query, overlay)
+	result, err := s.snapshot.Query(queryCtx, query, overlay)
+	if err != nil {
+		return HistoryQueryResult{}, postgresCommittedQueryError(ctx)
+	}
+	return result, nil
 }
 
 func (s *postgresSpoolStoreSnapshot) Close() {
@@ -627,6 +710,7 @@ func (s *postgresSpoolStore) retry(err error) bool {
 	s.nextRetry = s.options.Now().Add(delay)
 	s.state = postgresSpoolStateDegraded
 	s.lastErrorCategory = category
+	s.signalCommitProgressLocked()
 	s.statusAccess.Unlock()
 
 	if waitErr := s.options.Wait(s.workerCtx, delay); waitErr != nil {
@@ -645,6 +729,7 @@ func (s *postgresSpoolStore) markReady() {
 	s.lastErrorCategory = postgresSpoolErrorNone
 	s.retryAttempt = 0
 	s.nextRetry = time.Time{}
+	s.signalCommitProgressLocked()
 	s.statusAccess.Unlock()
 }
 
@@ -664,6 +749,7 @@ func (s *postgresSpoolStore) markPermanentCategory(
 	s.state = postgresSpoolStatePermanent
 	s.lastErrorCategory = category
 	s.nextRetry = time.Time{}
+	s.signalCommitProgressLocked()
 	s.statusAccess.Unlock()
 }
 
@@ -705,6 +791,26 @@ func (s *postgresSpoolStore) signal(channel chan struct{}) {
 	case channel <- struct{}{}:
 	default:
 	}
+}
+
+func (s *postgresSpoolStore) signalCommitProgress() {
+	s.statusAccess.Lock()
+	s.signalCommitProgressLocked()
+	s.statusAccess.Unlock()
+}
+
+func (s *postgresSpoolStore) signalCommitProgressLocked() {
+	if s.commitProgress != nil {
+		close(s.commitProgress)
+	}
+	s.commitProgress = make(chan struct{})
+}
+
+func postgresCommittedQueryError(ctx context.Context) error {
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return context.Canceled
+	}
+	return ErrHistoryUnavailable
 }
 
 func normalizePostgresSpoolBatch(

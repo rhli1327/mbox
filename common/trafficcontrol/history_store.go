@@ -39,6 +39,14 @@ type historyStoreReader interface {
 	BeginRead(context.Context) (historyStoreSnapshot, error)
 }
 
+type historyStoreCommittedReader interface {
+	Commit(historyBatch) (historyCommitBoundary, error)
+	BeginReadCommitted(
+		context.Context,
+		historyCommitBoundary,
+	) (historyStoreSnapshot, error)
+}
+
 type historyStore interface {
 	historyStoreLifecycle
 	historyStoreWriter

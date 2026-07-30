@@ -163,6 +163,8 @@ type History struct {
 	accepting   bool
 	pending     historyBatch
 	queryAccess chan struct{}
+	queryCtx    context.Context
+	cancelQuery context.CancelFunc
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -175,6 +177,10 @@ func NewHistory(ctx context.Context, logger log.ContextLogger, options HistoryOp
 }
 
 func newHistory(ctx context.Context, logger log.ContextLogger, store historyStore) *History {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	queryCtx, cancelQuery := context.WithCancel(ctx)
 	return &History{
 		ctx:         ctx,
 		logger:      logger,
@@ -182,6 +188,8 @@ func newHistory(ctx context.Context, logger log.ContextLogger, store historyStor
 		accepting:   true,
 		pending:     make(historyBatch),
 		queryAccess: make(chan struct{}, historyQueryParallel),
+		queryCtx:    queryCtx,
+		cancelQuery: cancelQuery,
 		done:        make(chan struct{}),
 	}
 }
@@ -270,6 +278,9 @@ func (h *History) Close() error {
 
 func (h *History) close() error {
 	close(h.done)
+	if h.cancelQuery != nil {
+		h.cancelQuery()
+	}
 	h.loopWait.Wait()
 
 	h.storeAccess.Lock()
@@ -399,38 +410,81 @@ func (h *History) Query(ctx context.Context, query HistoryQuery) (HistoryQueryRe
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	queryCtx, cancelQuery := context.WithCancel(ctx)
+	stopLifecycleCancel := context.AfterFunc(h.queryCtx, cancelQuery)
+	defer func() {
+		stopLifecycleCancel()
+		cancelQuery()
+	}()
+	queryError := func(err error) error {
+		if err != nil &&
+			ctx.Err() == nil &&
+			h.queryCtx.Err() != nil &&
+			errors.Is(err, context.Canceled) {
+			return ErrHistoryUnavailable
+		}
+		return err
+	}
+	if h.queryCtx.Err() != nil {
+		return HistoryQueryResult{}, ErrHistoryUnavailable
+	}
 	select {
 	case h.queryAccess <- struct{}{}:
 		defer func() { <-h.queryAccess }()
-	case <-ctx.Done():
-		return HistoryQueryResult{}, ctx.Err()
+	case <-queryCtx.Done():
+		return HistoryQueryResult{}, queryError(queryCtx.Err())
 	}
 
 	h.storeAccess.RLock()
 	defer h.storeAccess.RUnlock()
+	if err = queryCtx.Err(); err != nil {
+		return HistoryQueryResult{}, queryError(err)
+	}
 
 	// Creating the store snapshot and copying pending deltas under the flush
 	// lock establishes one consistent query boundary. Once the snapshot exists,
 	// a later flush can proceed without changing the persisted side of it.
 	h.flushAccess.Lock()
-	snapshot, err := h.store.BeginRead(ctx)
-	if err != nil {
-		h.flushAccess.Unlock()
-		return HistoryQueryResult{}, err
+	var snapshot historyStoreSnapshot
+	pending := make(historyBatch)
+	if committedStore, committed := h.store.(historyStoreCommittedReader); committed {
+		h.access.Lock()
+		pending = h.pending
+		h.pending = make(historyBatch)
+		h.access.Unlock()
+		boundary, commitErr := committedStore.Commit(pending)
+		if commitErr != nil {
+			h.restorePending(pending)
+			h.flushAccess.Unlock()
+			return HistoryQueryResult{}, commitErr
+		}
+		pending = make(historyBatch)
+		snapshot, err = committedStore.BeginReadCommitted(queryCtx, boundary)
+	} else {
+		snapshot, err = h.store.BeginRead(queryCtx)
+		if err == nil {
+			h.access.Lock()
+			pending = make(historyBatch, len(h.pending))
+			for key, counters := range h.pending {
+				pending[key] = counters
+			}
+			h.access.Unlock()
+		}
 	}
-	h.access.Lock()
-	pending := make(historyBatch, len(h.pending))
-	for key, counters := range h.pending {
-		pending[key] = counters
-	}
-	h.access.Unlock()
 	h.flushAccess.Unlock()
+	if err != nil {
+		return HistoryQueryResult{}, queryError(err)
+	}
 	defer snapshot.Close()
-	return snapshot.Query(ctx, query, historyQueryOverlay{
+	result, err := snapshot.Query(queryCtx, query, historyQueryOverlay{
 		pending:                  pending,
 		targetAvailableFrom:      h.targetAvailableFromAt(time.Now()),
 		destinationAvailableFrom: h.destinationAvailableFromAt(time.Now()),
 	})
+	if err != nil {
+		return HistoryQueryResult{}, queryError(err)
+	}
+	return result, nil
 }
 
 func normalizeHistoryQuery(query HistoryQuery) (HistoryQuery, error) {

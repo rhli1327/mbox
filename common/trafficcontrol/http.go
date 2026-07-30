@@ -204,9 +204,16 @@ func NewHistoryHTTPHandler(history HistoryReader) http.Handler {
 		}
 		result, err := history.Query(request.Context(), query)
 		if err != nil {
-			if request.Context().Err() != nil ||
-				errors.Is(err, context.Canceled) ||
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			if errors.Is(err, ErrHistoryUnavailable) ||
 				errors.Is(err, context.DeadlineExceeded) {
+				writeAPIError(
+					writer,
+					http.StatusServiceUnavailable,
+					ErrHistoryUnavailable.Error(),
+				)
 				return
 			}
 			writeAPIError(writer, http.StatusInternalServerError, "query failed")
