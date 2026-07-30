@@ -10,11 +10,6 @@ type ExperimentalOptions struct {
 	Debug             *DebugOptions             `json:"debug,omitempty"`
 }
 
-type TrafficStatisticsOptions struct {
-	Enabled bool   `json:"enabled,omitempty"`
-	Path    string `json:"path,omitempty"`
-}
-
 type CacheFileOptions struct {
 	Enabled     bool               `json:"enabled,omitempty"`
 	Path        string             `json:"path,omitempty"`

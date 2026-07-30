@@ -159,6 +159,7 @@ func New(options Options) (*Box, error) {
 	var needClashAPI bool
 	var needV2RayAPI bool
 	var needTrafficStatistics bool
+	var resolvedTrafficStatistics option.ResolvedTrafficStatisticsOptions
 	if experimentalOptions.CacheFile != nil && experimentalOptions.CacheFile.Enabled || options.PlatformLogWriter != nil {
 		needCacheFile = true
 	}
@@ -169,6 +170,15 @@ func New(options Options) (*Box, error) {
 		needV2RayAPI = true
 	}
 	if experimentalOptions.TrafficStatistics != nil && experimentalOptions.TrafficStatistics.Enabled {
+		resolvedTrafficStatistics, err = option.ResolveTrafficStatisticsOptions(
+			experimentalOptions.TrafficStatistics,
+		)
+		if err != nil {
+			return nil, E.Cause(err, "validate traffic statistics options")
+		}
+		if resolvedTrafficStatistics.StorageType == option.TrafficStatisticsStorageTypePostgres {
+			return nil, trafficcontrol.ErrPostgresRequiresDurableSpool
+		}
 		needTrafficStatistics = true
 	}
 	needAPIService := common.Any(options.Services, func(it option.Service) bool {
@@ -257,9 +267,8 @@ func New(options Options) (*Box, error) {
 		if err != nil {
 			return nil, E.Cause(err, "calculate traffic statistics config revision")
 		}
-		trafficOptions := common.PtrValueOrDefault(experimentalOptions.TrafficStatistics)
 		trafficHistory = trafficcontrol.NewHistory(ctx, logFactory.NewLogger("traffic-statistics"), trafficcontrol.HistoryOptions{
-			Path:          trafficOptions.Path,
+			Path:          resolvedTrafficStatistics.Path,
 			ConfigContent: configContent,
 		})
 		service.MustRegisterPtr(ctx, trafficHistory)

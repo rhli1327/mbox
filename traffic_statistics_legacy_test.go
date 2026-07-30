@@ -2,6 +2,7 @@ package box_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +13,8 @@ import (
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/json"
 	"github.com/sagernet/sing/service/filemanager"
+
+	"github.com/sagernet/sing-box/common/trafficcontrol"
 )
 
 func TestTrafficStatisticsLegacyConfigurationUsesExpectedBoltPath(t *testing.T) {
@@ -96,5 +99,54 @@ func TestTrafficStatisticsLegacyConfigurationUsesExpectedBoltPath(t *testing.T) 
 				}
 			}
 		})
+	}
+}
+
+func TestPostgresRuntimeRequiresDurableSpool(t *testing.T) {
+	basePath := t.TempDir()
+	ctx := include.Context(filemanager.WithDefault(
+		context.Background(),
+		basePath,
+		"",
+		os.Getuid(),
+		os.Getgid(),
+	))
+	var options option.Options
+	err := json.UnmarshalContext(ctx, []byte(`{
+		"experimental": {
+			"traffic_statistics": {
+				"enabled": true,
+				"identity_path": "state/traffic-instance.json",
+				"storage": {
+					"type": "postgres",
+					"dsn": "postgres://user:P2_SECRET_MUST_NOT_APPEAR_7f6e8a3c@does-not-exist.invalid/arbitrary"
+				},
+				"spool": {"path": "state/traffic-spool.db"}
+			}
+		}
+	}`), &options)
+	if err != nil {
+		t.Fatal("decode PostgreSQL traffic statistics configuration:", err)
+	}
+	instance, err := box.New(box.Options{
+		Context: ctx,
+		Options: options,
+	})
+	if instance != nil {
+		_ = instance.Close()
+		t.Fatal("PostgreSQL traffic statistics unexpectedly created a Box")
+	}
+	if !errors.Is(err, trafficcontrol.ErrPostgresRequiresDurableSpool) {
+		t.Fatalf("unexpected PostgreSQL runtime gate error: %v", err)
+	}
+	if err.Error() != "traffic statistics PostgreSQL recording requires durable spool support" {
+		t.Fatalf("unstable PostgreSQL runtime gate text: %q", err)
+	}
+	entries, readErr := os.ReadDir(basePath)
+	if readErr != nil {
+		t.Fatal("read isolated base path:", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("PostgreSQL runtime gate created local state: %#v", entries)
 	}
 }
