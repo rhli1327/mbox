@@ -110,6 +110,17 @@ jobs:
             -race \
             ./common/trafficcontrol
 
+      - name: Test outbound-dependent Box lifecycle with race detector
+        run: |
+          set -euo pipefail
+          env GOWORK=off GOTOOLCHAIN=local \
+            go test \
+            -mod=readonly \
+            -count=1 \
+            -race \
+            -run '^TestBoxOutboundDependent' \
+            .
+
       - name: Test root module
         run: |
           set -euo pipefail
@@ -294,7 +305,7 @@ jobs:
             -count=1 \
             -race \
             -tags with_postgres \
-            -run '^(TestPostgresHistoryBackendContract|TestPostgresSchemaConcurrentInitializers)$' \
+            -run '^(TestPostgresHistoryBackendContract|TestPostgresSchemaConcurrentInitializers|TestPostgresDetourUsesSelectedOutbound|TestPostgresDetourCancelRequestUsesLogicalTarget|TestPostgresStoreRetriesOpenAfterDetourFailure)$' \
             ./common/trafficcontrol
           env GOWORK=off GOTOOLCHAIN=local go test \
             -mod=readonly \

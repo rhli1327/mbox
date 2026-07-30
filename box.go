@@ -44,24 +44,25 @@ import (
 var _ adapter.SimpleLifecycle = (*Box)(nil)
 
 type Box struct {
-	createdAt           time.Time
-	debugOptions        option.DebugOptions
-	debugHTTPServer     *http.Server
-	logFactory          log.Factory
-	logger              log.ContextLogger
-	network             *route.NetworkManager
-	endpoint            *endpoint.Manager
-	inbound             *inbound.Manager
-	outbound            *outbound.Manager
-	service             *boxService.Manager
-	certificateProvider *boxCertificate.Manager
-	dnsTransport        *dns.TransportManager
-	dnsRouter           *dns.Router
-	connection          *route.ConnectionManager
-	router              *route.Router
-	httpClientService   adapter.LifecycleService
-	internalService     []adapter.LifecycleService
-	done                chan struct{}
+	createdAt                time.Time
+	debugOptions             option.DebugOptions
+	debugHTTPServer          *http.Server
+	logFactory               log.Factory
+	logger                   log.ContextLogger
+	network                  *route.NetworkManager
+	endpoint                 *endpoint.Manager
+	inbound                  *inbound.Manager
+	outbound                 *outbound.Manager
+	service                  *boxService.Manager
+	certificateProvider      *boxCertificate.Manager
+	dnsTransport             *dns.TransportManager
+	dnsRouter                *dns.Router
+	connection               *route.ConnectionManager
+	router                   *route.Router
+	httpClientService        adapter.LifecycleService
+	internalService          []adapter.LifecycleService
+	outboundDependentService []adapter.LifecycleService
+	done                     chan struct{}
 }
 
 type Options struct {
@@ -577,6 +578,10 @@ func (s *Box) preStart() error {
 	if err != nil {
 		return err
 	}
+	err = adapter.StartNamed(s.logger, adapter.StartStateInitialize, s.outboundDependentService)
+	if err != nil {
+		return err
+	}
 	err = adapter.Start(s.logger, adapter.StartStateInitialize, s.network, s.dnsTransport, s.dnsRouter, s.connection, s.router, s.outbound, s.inbound, s.endpoint, s.service, s.certificateProvider)
 	if err != nil {
 		return err
@@ -605,6 +610,10 @@ func (s *Box) start() error {
 	if err != nil {
 		return err
 	}
+	err = adapter.StartNamed(s.logger, adapter.StartStateStart, s.outboundDependentService)
+	if err != nil {
+		return err
+	}
 	err = adapter.Start(s.logger, adapter.StartStateStart, s.endpoint)
 	if err != nil {
 		return err
@@ -625,11 +634,19 @@ func (s *Box) start() error {
 	if err != nil {
 		return err
 	}
+	err = adapter.StartNamed(s.logger, adapter.StartStatePostStart, s.outboundDependentService)
+	if err != nil {
+		return err
+	}
 	err = adapter.Start(s.logger, adapter.StartStateStarted, s.network, s.dnsTransport, s.dnsRouter, s.connection, s.router, s.outbound, s.endpoint, s.certificateProvider, s.inbound, s.service)
 	if err != nil {
 		return err
 	}
 	err = adapter.StartNamed(s.logger, adapter.StartStateStarted, s.internalService)
+	if err != nil {
+		return err
+	}
+	err = adapter.StartNamed(s.logger, adapter.StartStateStarted, s.outboundDependentService)
 	if err != nil {
 		return err
 	}
@@ -658,16 +675,24 @@ func (s *Box) Close() error {
 		{"inbound", s.inbound},
 		{"certificate-provider", s.certificateProvider},
 		{"endpoint", s.endpoint},
-		{"outbound", s.outbound},
-		{"router", s.router},
-		{"connection", s.connection},
-		{"dns-router", s.dnsRouter},
-		{"dns-transport", s.dnsTransport},
-		{"network", s.network},
 	} {
 		done := adapter.LogElapsed(s.logger, "close ", closeItem.name)
 		err = E.Append(err, closeItem.service.Close(), func(err error) error {
 			return E.Cause(err, "close ", closeItem.name)
+		})
+		done()
+	}
+	for _, lifecycleService := range s.internalService {
+		done := adapter.LogElapsed(s.logger, "close ", lifecycleService.Name())
+		err = E.Append(err, lifecycleService.Close(), func(err error) error {
+			return E.Cause(err, "close ", lifecycleService.Name())
+		})
+		done()
+	}
+	for _, lifecycleService := range s.outboundDependentService {
+		done := adapter.LogElapsed(s.logger, "close ", lifecycleService.Name())
+		err = E.Append(err, lifecycleService.Close(), func(err error) error {
+			return E.Cause(err, "close ", lifecycleService.Name())
 		})
 		done()
 	}
@@ -679,10 +704,20 @@ func (s *Box) Close() error {
 		})
 		s.logger.Trace("close ", s.httpClientService.Name(), " completed (", F.Seconds(time.Since(startTime).Seconds()), "s)")
 	}
-	for _, lifecycleService := range s.internalService {
-		done := adapter.LogElapsed(s.logger, "close ", lifecycleService.Name())
-		err = E.Append(err, lifecycleService.Close(), func(err error) error {
-			return E.Cause(err, "close ", lifecycleService.Name())
+	for _, closeItem := range []struct {
+		name    string
+		service adapter.Lifecycle
+	}{
+		{"outbound", s.outbound},
+		{"router", s.router},
+		{"connection", s.connection},
+		{"dns-router", s.dnsRouter},
+		{"dns-transport", s.dnsTransport},
+		{"network", s.network},
+	} {
+		done := adapter.LogElapsed(s.logger, "close ", closeItem.name)
+		err = E.Append(err, closeItem.service.Close(), func(err error) error {
+			return E.Cause(err, "close ", closeItem.name)
 		})
 		done()
 	}
