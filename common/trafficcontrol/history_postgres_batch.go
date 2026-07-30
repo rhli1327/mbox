@@ -3,13 +3,9 @@ package trafficcontrol
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
-	"slices"
 	"strconv"
 	"time"
 
@@ -18,19 +14,6 @@ import (
 )
 
 const postgresUint64Maximum = "18446744073709551615"
-
-type postgresBatchRecord struct {
-	Key      historyKey
-	Counters historyCounters
-	Encoded  []byte
-}
-
-type postgresBatchIdentity struct {
-	Checksum    [sha256.Size]byte
-	Count       int
-	FirstBucket *time.Time
-	LastBucket  *time.Time
-}
 
 func (s *postgresStore) Write(batch historyBatch) error {
 	// Phase 2's direct historyStore adapter has no durable batch identity.
@@ -133,120 +116,6 @@ func equalPostgresBatchTime(left *time.Time, right *time.Time) bool {
 		return left == nil && right == nil
 	}
 	return left.UTC().Equal(right.UTC())
-}
-
-func encodePostgresBatch(
-	batch historyBatch,
-) ([]postgresBatchRecord, postgresBatchIdentity, error) {
-	normalizedBatch := normalizePostgresBatch(batch)
-	records := make([]postgresBatchRecord, 0, len(normalizedBatch))
-	for key, counters := range normalizedBatch {
-		encoded, err := encodePostgresBatchRecord(key, counters)
-		if err != nil {
-			return nil, postgresBatchIdentity{}, err
-		}
-		records = append(records, postgresBatchRecord{
-			Key:      key,
-			Counters: counters,
-			Encoded:  encoded,
-		})
-	}
-	slices.SortFunc(records, func(left postgresBatchRecord, right postgresBatchRecord) int {
-		return bytes.Compare(left.Encoded, right.Encoded)
-	})
-	hasher := sha256.New()
-	for _, record := range records {
-		_, _ = hasher.Write(record.Encoded)
-	}
-	var checksum [sha256.Size]byte
-	copy(checksum[:], hasher.Sum(nil))
-	identity := postgresBatchIdentity{
-		Checksum: checksum,
-		Count:    len(records),
-	}
-	if len(records) > 0 {
-		first := time.Unix(records[0].Key.Bucket, 0).UTC()
-		last := first
-		for _, record := range records[1:] {
-			bucket := time.Unix(record.Key.Bucket, 0).UTC()
-			if bucket.Before(first) {
-				first = bucket
-			}
-			if bucket.After(last) {
-				last = bucket
-			}
-		}
-		identity.FirstBucket = &first
-		identity.LastBucket = &last
-	}
-	return records, identity, nil
-}
-
-func normalizePostgresBatch(batch historyBatch) historyBatch {
-	normalized := make(historyBatch, len(batch))
-	for key, counters := range batch {
-		domain := normalizeDestinationDomain(key.DestinationDomain)
-		if domain != "" {
-			key.DestinationDomain = domain
-			key.DestinationIP = ""
-		} else {
-			key.DestinationDomain = ""
-			key.DestinationIP = normalizeDestinationIP(key.DestinationIP)
-		}
-		current := normalized[key]
-		current.UplinkBytes = saturatingAdd(
-			current.UplinkBytes,
-			counters.UplinkBytes,
-		)
-		current.DownlinkBytes = saturatingAdd(
-			current.DownlinkBytes,
-			counters.DownlinkBytes,
-		)
-		current.Connections = saturatingAdd(
-			current.Connections,
-			counters.Connections,
-		)
-		normalized[key] = current
-	}
-	return normalized
-}
-
-func encodePostgresBatchRecord(
-	key historyKey,
-	counters historyCounters,
-) ([]byte, error) {
-	var encoded bytes.Buffer
-	if err := binary.Write(&encoded, binary.BigEndian, key.Bucket); err != nil {
-		return nil, err
-	}
-	for _, value := range []string{
-		key.ConfigRevision,
-		key.RouteTag,
-		key.GroupPath,
-		key.DestinationDomain,
-		key.DestinationIP,
-		key.ActualOutboundTag,
-		key.ActualOutboundType,
-		key.Network,
-	} {
-		if uint64(len(value)) > uint64(math.MaxUint32) {
-			return nil, errors.New("traffic statistics batch dimension is too large")
-		}
-		if err := binary.Write(&encoded, binary.BigEndian, uint32(len(value))); err != nil {
-			return nil, err
-		}
-		_, _ = encoded.WriteString(value)
-	}
-	for _, counter := range []uint64{
-		counters.UplinkBytes,
-		counters.DownlinkBytes,
-		counters.Connections,
-	} {
-		if err := binary.Write(&encoded, binary.BigEndian, counter); err != nil {
-			return nil, err
-		}
-	}
-	return encoded.Bytes(), nil
 }
 
 func (s *postgresStore) upsertPostgresBatchRecord(
