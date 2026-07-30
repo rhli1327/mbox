@@ -303,6 +303,13 @@ jobs:
           env GOWORK=off GOTOOLCHAIN=local go test \
             -mod=readonly \
             -count=1 \
+            -timeout=10m \
+            -tags with_postgres \
+            -run '^TestPostgresBoxPG14' \
+            .
+          env GOWORK=off GOTOOLCHAIN=local go test \
+            -mod=readonly \
+            -count=1 \
             -race \
             -tags with_postgres \
             -run '^(TestPostgresHistoryBackendContract|TestPostgresSchemaConcurrentInitializers|TestPostgresDetourUsesSelectedOutbound|TestPostgresDetourCancelRequestUsesLogicalTarget|TestPostgresStoreRetriesOpenAfterDetourFailure)$' \

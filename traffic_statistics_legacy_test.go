@@ -2,7 +2,6 @@ package box_test
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,8 +12,6 @@ import (
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/json"
 	"github.com/sagernet/sing/service/filemanager"
-
-	"github.com/sagernet/sing-box/common/trafficcontrol"
 )
 
 func TestTrafficStatisticsLegacyConfigurationUsesExpectedBoltPath(t *testing.T) {
@@ -102,7 +99,7 @@ func TestTrafficStatisticsLegacyConfigurationUsesExpectedBoltPath(t *testing.T) 
 	}
 }
 
-func TestPostgresRuntimeRequiresDurableSpool(t *testing.T) {
+func TestPostgresRuntimeCreatesDurableLocalStateWithoutConnecting(t *testing.T) {
 	basePath := t.TempDir()
 	ctx := include.Context(filemanager.WithDefault(
 		context.Background(),
@@ -132,21 +129,26 @@ func TestPostgresRuntimeRequiresDurableSpool(t *testing.T) {
 		Context: ctx,
 		Options: options,
 	})
-	if instance != nil {
-		_ = instance.Close()
-		t.Fatal("PostgreSQL traffic statistics unexpectedly created a Box")
+	if err != nil {
+		t.Fatal("construct PostgreSQL traffic statistics Box:", err)
 	}
-	if !errors.Is(err, trafficcontrol.ErrPostgresRequiresDurableSpool) {
-		t.Fatalf("unexpected PostgreSQL runtime gate error: %v", err)
+	if instance == nil {
+		t.Fatal("PostgreSQL traffic statistics returned a nil Box")
 	}
-	if err.Error() != "traffic statistics PostgreSQL recording requires durable spool support" {
-		t.Fatalf("unstable PostgreSQL runtime gate text: %q", err)
+	if err = instance.Close(); err != nil {
+		t.Fatal("close unstarted PostgreSQL traffic statistics Box:", err)
 	}
-	entries, readErr := os.ReadDir(basePath)
-	if readErr != nil {
-		t.Fatal("read isolated base path:", readErr)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("PostgreSQL runtime gate created local state: %#v", entries)
+	for _, name := range []string{
+		"state/traffic-instance.json",
+		"state/traffic-spool.db",
+	} {
+		path := filepath.Join(basePath, filepath.FromSlash(name))
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatalf("stat durable local state %q: %v", path, statErr)
+		}
+		if !info.Mode().IsRegular() {
+			t.Fatalf("durable local state is not a regular file: %s", info.Mode())
+		}
 	}
 }

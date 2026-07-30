@@ -177,9 +177,6 @@ func New(options Options) (*Box, error) {
 		if err != nil {
 			return nil, E.Cause(err, "validate traffic statistics options")
 		}
-		if resolvedTrafficStatistics.StorageType == option.TrafficStatisticsStorageTypePostgres {
-			return nil, trafficcontrol.ErrPostgresRequiresDurableSpool
-		}
 		needTrafficStatistics = true
 	}
 	needAPIService := common.Any(options.Services, func(it option.Service) bool {
@@ -263,15 +260,48 @@ func New(options Options) (*Box, error) {
 		return nil, E.Cause(err, "initialize router")
 	}
 	var trafficHistory *trafficcontrol.History
-	if needTrafficStatistics {
-		configContent, err := marshalTrafficStatisticsConfig(ctx, options.Options)
-		if err != nil {
-			return nil, E.Cause(err, "calculate traffic statistics config revision")
+	trafficHistoryOwned := false
+	defer func() {
+		if trafficHistoryOwned {
+			_ = trafficHistory.Close()
 		}
-		trafficHistory = trafficcontrol.NewHistory(ctx, logFactory.NewLogger("traffic-statistics"), trafficcontrol.HistoryOptions{
-			Path:          resolvedTrafficStatistics.Path,
-			ConfigContent: configContent,
-		})
+	}()
+	if needTrafficStatistics {
+		if resolvedTrafficStatistics.StorageType ==
+			option.TrafficStatisticsStorageTypePostgres {
+			trafficHistory, err = trafficcontrol.NewPostgresHistory(
+				ctx,
+				logFactory.NewLogger("traffic-statistics"),
+				options.Options,
+				resolvedTrafficStatistics,
+			)
+			if err != nil {
+				return nil, E.Cause(
+					err,
+					"create PostgreSQL traffic statistics history",
+				)
+			}
+		} else {
+			configContent, marshalErr := marshalTrafficStatisticsConfig(
+				ctx,
+				options.Options,
+			)
+			if marshalErr != nil {
+				return nil, E.Cause(
+					marshalErr,
+					"calculate traffic statistics config revision",
+				)
+			}
+			trafficHistory = trafficcontrol.NewHistory(
+				ctx,
+				logFactory.NewLogger("traffic-statistics"),
+				trafficcontrol.HistoryOptions{
+					Path:          resolvedTrafficStatistics.Path,
+					ConfigContent: configContent,
+				},
+			)
+		}
+		trafficHistoryOwned = true
 		service.MustRegisterPtr(ctx, trafficHistory)
 		service.MustRegister[trafficcontrol.HistoryReader](ctx, trafficHistory)
 	}
@@ -502,7 +532,7 @@ func New(options Options) (*Box, error) {
 		timeService.TimeService = ntpService
 		internalServices = append(internalServices, adapter.NewLifecycleService(ntpService, "ntp service"))
 	}
-	return &Box{
+	result := &Box{
 		network:             networkManager,
 		endpoint:            endpointManager,
 		inbound:             inboundManager,
@@ -520,7 +550,9 @@ func New(options Options) (*Box, error) {
 		logger:              logFactory.Logger(),
 		internalService:     internalServices,
 		done:                make(chan struct{}),
-	}, nil
+	}
+	trafficHistoryOwned = false
+	return result, nil
 }
 
 func (s *Box) PreStart() error {
