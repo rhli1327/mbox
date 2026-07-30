@@ -8,9 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sagernet/sing-box/log"
-	"github.com/sagernet/sing-box/option"
-
 	"github.com/gofrs/uuid/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -109,38 +106,6 @@ func TestPostgresBatchEncodingIsCanonical(t *testing.T) {
 			canonicalRecords,
 			canonicalIdentity,
 		)
-	}
-}
-
-func TestPostgresDetourRejectedBeforeNetwork(t *testing.T) {
-	_, err := newPostgresStore(
-		context.Background(),
-		log.StdLogger(),
-		postgresHistoryOptions{
-			DSN:              "postgres://secret:do-not-connect@invalid.invalid/db",
-			Schema:           "public",
-			SchemaManagement: option.TrafficStatisticsSchemaManagementAuto,
-			Dialer: option.DialerOptions{
-				Detour: "proxy",
-			},
-		},
-	)
-	if !errors.Is(err, ErrPostgresDetourNotReady) {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	err = MigratePostgresSchema(
-		context.Background(),
-		log.StdLogger(),
-		PostgresSchemaOptions{
-			DSN:    "postgres://secret:do-not-connect@invalid.invalid/db",
-			Schema: "public",
-			Dialer: option.DialerOptions{
-				Detour: "proxy",
-			},
-		},
-	)
-	if !errors.Is(err, ErrPostgresDetourNotReady) {
-		t.Fatalf("unexpected admin error: %v", err)
 	}
 }
 

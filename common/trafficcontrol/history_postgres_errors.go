@@ -41,6 +41,12 @@ var (
 	ErrPostgresBatchCollision = errors.New(
 		"traffic statistics PostgreSQL batch ID has different content",
 	)
+	ErrPostgresDetourUnavailable = errors.New(
+		"traffic statistics PostgreSQL detour outbound is unavailable",
+	)
+	ErrPostgresDetourNoStream = errors.New(
+		"traffic statistics PostgreSQL detour outbound does not support TCP streams",
+	)
 )
 
 func classifyPostgresError(ctx context.Context, operation string, err error) error {

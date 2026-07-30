@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
 
@@ -49,6 +48,7 @@ type postgresStore struct {
 	schemaManagement string
 	identity         trafficIdentity
 	revision         postgresRevisionInput
+	poolFactory      *postgresPoolFactory
 	pool             *pgxpool.Pool
 
 	access           sync.RWMutex
@@ -65,9 +65,6 @@ func newPostgresStore(
 	options postgresHistoryOptions,
 ) (*postgresStore, error) {
 	_ = logger
-	if options.Dialer.Detour != "" {
-		return nil, ErrPostgresDetourNotReady
-	}
 	if err := option.ValidateTrafficStatisticsSchema(options.Schema); err != nil {
 		return nil, fmt.Errorf("%w", ErrPostgresConfiguration)
 	}
@@ -82,7 +79,7 @@ func newPostgresStore(
 		len(options.Revision.ConfigRevision) != 32 {
 		return nil, fmt.Errorf("%w", ErrPostgresConfiguration)
 	}
-	pool, err := newPostgresPool(ctx, postgresConnectionOptions{
+	poolFactory, err := newPostgresPoolFactory(ctx, postgresConnectionOptions{
 		DSN:                options.DSN,
 		Dialer:             options.Dialer,
 		MaxOpenConnections: options.MaxOpenConnections,
@@ -108,7 +105,7 @@ func newPostgresStore(
 			RoutingFingerprint: options.Revision.RoutingFingerprint,
 			ConfigRevision:     options.Revision.ConfigRevision,
 		},
-		pool: pool,
+		poolFactory: poolFactory,
 	}, nil
 }
 
@@ -125,7 +122,19 @@ func (s *postgresStore) Open() (historyStoreState, error) {
 			destinationsFrom: s.destinationsFrom,
 		}, nil
 	}
-	if err := s.pool.Ping(s.ctx); err != nil {
+	pool, err := s.poolFactory.Open(s.ctx)
+	if err != nil {
+		return historyStoreState{}, err
+	}
+	s.pool = pool
+	opened := false
+	defer func() {
+		if !opened {
+			pool.Close()
+			s.pool = nil
+		}
+	}()
+	if err = pool.Ping(s.ctx); err != nil {
 		return historyStoreState{}, classifyPostgresError(s.ctx, "connect traffic statistics database", err)
 	}
 	if err := managePostgresSchema(
@@ -144,6 +153,7 @@ func (s *postgresStore) Open() (historyStoreState, error) {
 	s.targetsFrom = state.targetsFrom
 	s.destinationsFrom = state.destinationsFrom
 	s.opened = true
+	opened = true
 	return state, nil
 }
 
@@ -232,7 +242,10 @@ func (s *postgresStore) Close() error {
 	}
 	s.closed = true
 	s.opened = false
-	s.pool.Close()
+	if s.pool != nil {
+		s.pool.Close()
+		s.pool = nil
+	}
 	for index := range s.identity.RevisionKey {
 		s.identity.RevisionKey[index] = 0
 	}
@@ -290,36 +303,9 @@ func newPostgresPool(
 	ctx context.Context,
 	options postgresConnectionOptions,
 ) (*pgxpool.Pool, error) {
-	if options.Dialer.Detour != "" {
-		return nil, ErrPostgresDetourNotReady
-	}
-	if options.DSN == "" ||
-		options.MaxOpenConnections < 1 ||
-		options.MinIdleConnections < 0 ||
-		options.MinIdleConnections > options.MaxOpenConnections ||
-		options.ConnectTimeout <= 0 ||
-		options.StatementTimeout <= 0 {
-		return nil, fmt.Errorf("%w", ErrPostgresConfiguration)
-	}
-	config, err := pgxpool.ParseConfig(options.DSN)
+	factory, err := newPostgresPoolFactory(ctx, options)
 	if err != nil {
-		return nil, fmt.Errorf("parse traffic statistics PostgreSQL connection: %w", ErrPostgresConfiguration)
+		return nil, err
 	}
-	config.MaxConns = int32(options.MaxOpenConnections)
-	config.MinConns = int32(options.MinIdleConnections)
-	config.ConnConfig.ConnectTimeout = options.ConnectTimeout
-	if config.ConnConfig.RuntimeParams == nil {
-		config.ConnConfig.RuntimeParams = make(map[string]string)
-	}
-	config.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(
-		options.StatementTimeout.Milliseconds(),
-		10,
-	)
-	config.ConnConfig.RuntimeParams["application_name"] = postgresApplicationName
-	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		return nil, fmt.Errorf("create traffic statistics PostgreSQL pool: %w", ErrPostgresConfiguration)
-	}
-	return pool, nil
+	return factory.Open(ctx)
 }
