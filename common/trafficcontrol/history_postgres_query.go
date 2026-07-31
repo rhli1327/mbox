@@ -298,10 +298,7 @@ func mustMarshalPostgresGroupPath(groupPath []string) string {
 	if groupPath == nil {
 		groupPath = []string{}
 	}
-	content, err := json.Marshal(groupPath)
-	if err != nil {
-		panic(err)
-	}
+	content, _ := json.Marshal(groupPath)
 	return string(content)
 }
 

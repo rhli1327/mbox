@@ -61,10 +61,8 @@ type postgresStore struct {
 
 func newPostgresStore(
 	ctx context.Context,
-	logger log.ContextLogger,
 	options postgresHistoryOptions,
 ) (*postgresStore, error) {
-	_ = logger
 	if err := option.ValidateTrafficStatisticsSchema(options.Schema); err != nil {
 		return nil, fmt.Errorf("%w", ErrPostgresConfiguration)
 	}

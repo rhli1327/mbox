@@ -265,10 +265,7 @@ func openHistorySpool(
 		configRevision: options.ConfigRevision,
 		db:             database,
 	}
-	if err = spool.validateAndPrepare(options); err != nil {
-		return closeOnError(err)
-	}
-	status, err := spool.readStatus()
+	status, err := spool.validateAndPrepare(options)
 	if err != nil {
 		return closeOnError(err)
 	}
@@ -453,13 +450,16 @@ func initializeHistorySpoolV1(
 	return nil
 }
 
-func (s *historySpool) validateAndPrepare(options historySpoolOptions) error {
-	return updateHistorySpoolDatabase(
+func (s *historySpool) validateAndPrepare(
+	options historySpoolOptions,
+) (historySpoolStatus, error) {
+	var status historySpoolStatus
+	err := updateHistorySpoolDatabase(
 		s.db,
 		s.faults,
 		"startup",
 		func(tx *bbolt.Tx) error {
-			status, err := validateHistorySpoolTransaction(
+			initialStatus, err := validateHistorySpoolTransaction(
 				tx,
 				historySpoolSafeLogicalSize,
 				false,
@@ -469,7 +469,7 @@ func (s *historySpool) validateAndPrepare(options historySpoolOptions) error {
 				return err
 			}
 			revisionHash := sha256.Sum256(options.Identity.RevisionKey)
-			if status.InstanceID != options.Identity.InstanceID ||
+			if initialStatus.InstanceID != options.Identity.InstanceID ||
 				!bytes.Equal(
 					tx.Bucket(historySpoolMetadataBucket).Get(historySpoolRevisionHashKey),
 					revisionHash[:],
@@ -477,9 +477,9 @@ func (s *historySpool) validateAndPrepare(options historySpoolOptions) error {
 				return ErrSpoolIdentityConflict
 			}
 			metadata := tx.Bucket(historySpoolMetadataBucket)
-			if status.RoutingFingerprint == options.RoutingFingerprint {
-				if !status.RemoteRevisionConfirmed &&
-					status.ConfigRevision != options.ConfigRevision {
+			if initialStatus.RoutingFingerprint == options.RoutingFingerprint {
+				if !initialStatus.RemoteRevisionConfirmed &&
+					initialStatus.ConfigRevision != options.ConfigRevision {
 					return ErrPostgresRevisionConflict
 				}
 			} else {
@@ -508,7 +508,7 @@ func (s *historySpool) validateAndPrepare(options historySpoolOptions) error {
 			if err = requeueHistorySpoolInflight(tx); err != nil {
 				return err
 			}
-			_, err = validateHistorySpoolTransaction(
+			status, err = validateHistorySpoolTransaction(
 				tx,
 				historySpoolSafeLogicalSize,
 				true,
@@ -517,6 +517,7 @@ func (s *historySpool) validateAndPrepare(options historySpoolOptions) error {
 			return err
 		},
 	)
+	return status, err
 }
 
 func validateHistorySpoolTransaction(
@@ -536,11 +537,7 @@ func validateHistorySpoolTransaction(
 	if err != nil {
 		return historySpoolStatus{}, err
 	}
-	type sequenceEntry struct {
-		sequence uint64
-		kind     byte
-	}
-	var entries []sequenceEntry
+	var entries []uint64
 	var queuedBatches uint64
 	var queuedRecords uint64
 	var queuedBytes uint64
@@ -562,7 +559,7 @@ func validateHistorySpoolTransaction(
 			if sequence == 0 {
 				return fmt.Errorf("%w: queue sequence is zero", ErrSpoolCorrupt)
 			}
-			entries = append(entries, sequenceEntry{sequence, bucketSpec.kind})
+			entries = append(entries, sequence)
 			if bucketSpec.kind == 'r' {
 				if !bytes.Equal(value, []byte{1}) {
 					return fmt.Errorf(
@@ -630,16 +627,7 @@ func validateHistorySpoolTransaction(
 			ErrSpoolCorrupt,
 		)
 	}
-	slices.SortFunc(entries, func(left, right sequenceEntry) int {
-		switch {
-		case left.sequence < right.sequence:
-			return -1
-		case left.sequence > right.sequence:
-			return 1
-		default:
-			return 0
-		}
-	})
+	slices.Sort(entries)
 	unresolved := status.NextSequence - status.ResolvedSequence - 1
 	if uint64(len(entries)) != unresolved {
 		return historySpoolStatus{}, fmt.Errorf(
@@ -647,9 +635,9 @@ func validateHistorySpoolTransaction(
 			ErrSpoolCorrupt,
 		)
 	}
-	for index, entry := range entries {
+	for index, sequence := range entries {
 		want := status.ResolvedSequence + uint64(index) + 1
-		if entry.sequence != want || entry.sequence >= status.NextSequence {
+		if sequence != want || sequence >= status.NextSequence {
 			return historySpoolStatus{}, fmt.Errorf(
 				"%w: queue sequence range is inconsistent",
 				ErrSpoolCorrupt,
@@ -718,13 +706,6 @@ func validateHistorySpoolMetadataKeys(metadata *bbolt.Bucket) error {
 func decodeHistorySpoolStatus(
 	metadata *bbolt.Bucket,
 ) (historySpoolStatus, error) {
-	readUint64 := func(key []byte) (uint64, error) {
-		value := metadata.Get(key)
-		if len(value) != 8 {
-			return 0, fmt.Errorf("%w: metadata integer is invalid", ErrSpoolCorrupt)
-		}
-		return binary.BigEndian.Uint64(value), nil
-	}
 	versionValue := metadata.Get(historySpoolFormatVersionKey)
 	if len(versionValue) != 4 {
 		return historySpoolStatus{}, fmt.Errorf(
@@ -786,11 +767,11 @@ func decodeHistorySpoolStatus(
 			ErrSpoolCorrupt,
 		)
 	}
-	targetSeconds, err := readUint64(historySpoolTargetAvailableFromKey)
+	targetSeconds, err := readHistorySpoolUint64(metadata, historySpoolTargetAvailableFromKey)
 	if err != nil {
 		return historySpoolStatus{}, err
 	}
-	destinationSeconds, err := readUint64(
+	destinationSeconds, err := readHistorySpoolUint64(metadata,
 		historySpoolDestinationAvailableFromKey,
 	)
 	if err != nil {
@@ -804,11 +785,11 @@ func decodeHistorySpoolStatus(
 			ErrSpoolCorrupt,
 		)
 	}
-	nextSequence, err := readUint64(historySpoolNextSequenceKey)
+	nextSequence, err := readHistorySpoolUint64(metadata, historySpoolNextSequenceKey)
 	if err != nil {
 		return historySpoolStatus{}, err
 	}
-	resolvedSequence, err := readUint64(historySpoolResolvedSequenceKey)
+	resolvedSequence, err := readHistorySpoolUint64(metadata, historySpoolResolvedSequenceKey)
 	if err != nil {
 		return historySpoolStatus{}, err
 	}
@@ -818,35 +799,35 @@ func decodeHistorySpoolStatus(
 			ErrSpoolCorrupt,
 		)
 	}
-	queueDepth, err := readUint64(historySpoolQueuedBatchesKey)
+	queueDepth, err := readHistorySpoolUint64(metadata, historySpoolQueuedBatchesKey)
 	if err != nil {
 		return historySpoolStatus{}, err
 	}
-	queueRecords, err := readUint64(historySpoolQueuedRecordsKey)
+	queueRecords, err := readHistorySpoolUint64(metadata, historySpoolQueuedRecordsKey)
 	if err != nil {
 		return historySpoolStatus{}, err
 	}
-	queueBytes, err := readUint64(historySpoolQueuedBytesKey)
+	queueBytes, err := readHistorySpoolUint64(metadata, historySpoolQueuedBytesKey)
 	if err != nil {
 		return historySpoolStatus{}, err
 	}
-	droppedBatches, err := readUint64(historySpoolDroppedBatchesKey)
+	droppedBatches, err := readHistorySpoolUint64(metadata, historySpoolDroppedBatchesKey)
 	if err != nil {
 		return historySpoolStatus{}, err
 	}
-	droppedRecords, err := readUint64(historySpoolDroppedRecordsKey)
+	droppedRecords, err := readHistorySpoolUint64(metadata, historySpoolDroppedRecordsKey)
 	if err != nil {
 		return historySpoolStatus{}, err
 	}
-	droppedBytes, err := readUint64(historySpoolDroppedBytesKey)
+	droppedBytes, err := readHistorySpoolUint64(metadata, historySpoolDroppedBytesKey)
 	if err != nil {
 		return historySpoolStatus{}, err
 	}
-	lossGeneration, err := readUint64(historySpoolLossGenerationKey)
+	lossGeneration, err := readHistorySpoolUint64(metadata, historySpoolLossGenerationKey)
 	if err != nil {
 		return historySpoolStatus{}, err
 	}
-	lastSuccessfulNanos, err := readUint64(historySpoolLastSuccessfulFlushKey)
+	lastSuccessfulNanos, err := readHistorySpoolUint64(metadata, historySpoolLastSuccessfulFlushKey)
 	if err != nil {
 		return historySpoolStatus{}, err
 	}
@@ -1393,6 +1374,7 @@ func advanceHistorySpoolRetired(tx *bbolt.Tx) error {
 	if err != nil {
 		return err
 	}
+	initialResolved := resolved
 	retired := tx.Bucket(historySpoolRetiredBucket)
 	for resolved != math.MaxUint64 {
 		key := encodeHistorySpoolUint64(resolved + 1)
@@ -1403,6 +1385,9 @@ func advanceHistorySpoolRetired(tx *bbolt.Tx) error {
 			return fmt.Errorf("%w: consume retired batch", ErrSpoolIO)
 		}
 		resolved++
+	}
+	if resolved == initialResolved {
+		return nil
 	}
 	if err = metadata.Put(
 		historySpoolResolvedSequenceKey,

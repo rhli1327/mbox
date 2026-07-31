@@ -35,11 +35,11 @@ func TestPostgresBatchEncodingIsCanonical(t *testing.T) {
 		secondKey: {UplinkBytes: 4, DownlinkBytes: 5, Connections: 6},
 		firstKey:  {UplinkBytes: 1, DownlinkBytes: 2, Connections: 3},
 	}
-	firstRecords, firstIdentity, err := encodePostgresBatch(first)
+	firstRecords, firstIdentity, err := encodeHistoryBatch(first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondRecords, secondIdentity, err := encodePostgresBatch(second)
+	secondRecords, secondIdentity, err := encodeHistoryBatch(second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestPostgresBatchEncodingIsCanonical(t *testing.T) {
 	nonCanonicalKey.DestinationDomain = "Example.COM."
 	canonicalKey := firstKey
 	canonicalKey.DestinationDomain = "example.com"
-	canonicalRecords, canonicalIdentity, err := encodePostgresBatch(historyBatch{
+	canonicalRecords, canonicalIdentity, err := encodeHistoryBatch(historyBatch{
 		nonCanonicalKey: {
 			UplinkBytes:   ^uint64(0),
 			DownlinkBytes: 2,

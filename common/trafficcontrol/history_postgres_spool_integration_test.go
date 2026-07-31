@@ -46,11 +46,7 @@ func TestPostgresSpoolStorePG14ExactOnceUnknownCommit(t *testing.T) {
 		ConfigRevision:     postgresOptions.Revision.ConfigRevision,
 	}
 
-	firstPostgres, err := newPostgresStore(
-		context.Background(),
-		log.StdLogger(),
-		postgresOptions,
-	)
+	firstPostgres, err := newPostgresStore(context.Background(), postgresOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,11 +94,7 @@ func TestPostgresSpoolStorePG14ExactOnceUnknownCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secondPostgres, err := newPostgresStore(
-		context.Background(),
-		log.StdLogger(),
-		postgresOptions,
-	)
+	secondPostgres, err := newPostgresStore(context.Background(), postgresOptions)
 	if err != nil {
 		t.Fatal(err)
 	}

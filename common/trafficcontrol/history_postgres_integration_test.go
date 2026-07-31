@@ -688,7 +688,7 @@ func TestPostgresStoreIdentityKeyConflict(t *testing.T) {
 	instanceID := newPostgresTestID(t)
 	first, _ := newPostgresTestStore(t, schema, instanceID, bytesOf(1))
 	secondOptions := testPostgresStoreOptions(schema, instanceID, bytesOf(2))
-	second, err := newPostgresStore(context.Background(), log.StdLogger(), secondOptions)
+	second, err := newPostgresStore(context.Background(), secondOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -940,8 +940,12 @@ func TestPostgresSSLModeDisable(t *testing.T) {
 	provisionPostgresTestSchema(t, schema)
 	store, err := newPostgresStore(
 		context.Background(),
-		log.StdLogger(),
-		testPostgresStoreOptionsWithDSN(schema, newPostgresTestID(t), bytesOf(7), testPostgresDSN),
+		testPostgresStoreOptionsWithDSN(
+			schema,
+			newPostgresTestID(t),
+			bytesOf(7),
+			testPostgresDSN,
+		),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -963,8 +967,12 @@ func TestPostgresSSLModeVerifyFull(t *testing.T) {
 	provisionPostgresTestSchema(t, schema)
 	store, err := newPostgresStore(
 		context.Background(),
-		log.StdLogger(),
-		testPostgresStoreOptionsWithDSN(schema, newPostgresTestID(t), bytesOf(8), testPostgresTLSDSN),
+		testPostgresStoreOptionsWithDSN(
+			schema,
+			newPostgresTestID(t),
+			bytesOf(8),
+			testPostgresTLSDSN,
+		),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1275,7 +1283,6 @@ func newPostgresTestStore(
 	provisionPostgresTestSchema(t, schema)
 	store, err := newPostgresStore(
 		context.Background(),
-		log.StdLogger(),
 		testPostgresStoreOptions(schema, instanceID, revisionKey),
 	)
 	if err != nil {
@@ -1330,11 +1337,7 @@ func (h *postgresHistoryBackendHarness) Open(
 		RoutingFingerprint: sha256.Sum256(configContent),
 		ConfigRevision:     hex.EncodeToString(revisionDigest[:historyRevisionSize]),
 	}
-	store, err := newPostgresStore(
-		context.Background(),
-		log.NewNOPFactory().NewLogger("traffic-postgres-contract"),
-		storeOptions,
-	)
+	store, err := newPostgresStore(context.Background(), storeOptions)
 	if err != nil {
 		t.Fatal("construct PostgreSQL contract store:", err)
 	}

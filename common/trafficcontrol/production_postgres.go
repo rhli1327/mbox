@@ -99,7 +99,7 @@ func NewPostgresHistory(
 		}
 	}()
 
-	remoteStore, err := newPostgresStore(ctx, logger, postgresHistoryOptions{
+	remoteStore, err := newPostgresStore(ctx, postgresHistoryOptions{
 		DSN:                traffic.DSN,
 		Schema:             traffic.Schema,
 		SchemaManagement:   traffic.SchemaManagement,

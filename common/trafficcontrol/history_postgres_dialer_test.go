@@ -163,7 +163,6 @@ func TestPostgresDetourConstructionIsNetworkFree(t *testing.T) {
 	)
 	store, err := newPostgresStore(
 		ctx,
-		log.StdLogger(),
 		testPostgresDetourStoreOptions("postgres-detour"),
 	)
 	if err != nil {
@@ -186,7 +185,6 @@ func TestPostgresDetourRejectsMissingOutbound(t *testing.T) {
 	)
 	store, err := newPostgresStore(
 		ctx,
-		log.StdLogger(),
 		testPostgresDetourStoreOptions("missing"),
 	)
 	if err != nil {
@@ -217,7 +215,6 @@ func TestPostgresDetourRejectsUDPOnlyOutbound(t *testing.T) {
 	)
 	store, err := newPostgresStore(
 		ctx,
-		log.StdLogger(),
 		testPostgresDetourStoreOptions(outbound.Tag()),
 	)
 	if err != nil {
@@ -304,7 +301,6 @@ func TestPostgresStoreRetriesOpenAfterDetourFailure(t *testing.T) {
 	)
 	store, err := newPostgresStore(
 		ctx,
-		log.StdLogger(),
 		testPostgresDetourStoreOptions(outbound.Tag()),
 	)
 	if err != nil {

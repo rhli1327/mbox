@@ -24,9 +24,6 @@ type historyBatchIdentity struct {
 	LastBucket  *time.Time
 }
 
-type postgresBatchRecord = historyBatchRecord
-type postgresBatchIdentity = historyBatchIdentity
-
 func encodeHistoryBatch(
 	batch historyBatch,
 ) ([]historyBatchRecord, historyBatchIdentity, error) {
@@ -74,12 +71,6 @@ func encodeHistoryBatch(
 	return records, identity, nil
 }
 
-func encodePostgresBatch(
-	batch historyBatch,
-) ([]postgresBatchRecord, postgresBatchIdentity, error) {
-	return encodeHistoryBatch(batch)
-}
-
 func normalizeHistoryBatch(batch historyBatch) historyBatch {
 	normalized := make(historyBatch, len(batch))
 	for key, counters := range batch {
@@ -107,10 +98,6 @@ func normalizeHistoryBatch(batch historyBatch) historyBatch {
 		normalized[key] = current
 	}
 	return normalized
-}
-
-func normalizePostgresBatch(batch historyBatch) historyBatch {
-	return normalizeHistoryBatch(batch)
 }
 
 func encodeHistoryBatchRecord(
@@ -152,13 +139,6 @@ func encodeHistoryBatchRecord(
 		}
 	}
 	return encoded.Bytes(), nil
-}
-
-func encodePostgresBatchRecord(
-	key historyKey,
-	counters historyCounters,
-) ([]byte, error) {
-	return encodeHistoryBatchRecord(key, counters)
 }
 
 func decodeHistoryBatchRecord(encoded []byte) (historyKey, historyCounters, error) {

@@ -124,12 +124,10 @@ func readTrafficIdentity(path string) (trafficIdentity, error) {
 		content.InstanceID == "" {
 		return trafficIdentity{}, fmt.Errorf("invalid traffic identity instance ID")
 	}
-	if len(content.RevisionKey) != 64 ||
-		content.RevisionKey != bytesToLowerHex(content.RevisionKey) {
-		return trafficIdentity{}, fmt.Errorf("invalid traffic identity revision key")
-	}
 	revisionKey, err := hex.DecodeString(content.RevisionKey)
-	if err != nil || len(revisionKey) != 32 {
+	if err != nil ||
+		len(revisionKey) != 32 ||
+		content.RevisionKey != hex.EncodeToString(revisionKey) {
 		return trafficIdentity{}, fmt.Errorf("invalid traffic identity revision key")
 	}
 	return trafficIdentity{
@@ -227,12 +225,4 @@ func checkConfiguredTrafficIdentity(
 		return trafficIdentity{}, ErrPostgresIdentityConflict
 	}
 	return identity, nil
-}
-
-func bytesToLowerHex(value string) string {
-	decoded, err := hex.DecodeString(value)
-	if err != nil {
-		return ""
-	}
-	return hex.EncodeToString(decoded)
 }

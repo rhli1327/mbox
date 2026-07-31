@@ -167,11 +167,7 @@ func newPostgresCommittedQueryIntegrationHistory(
 	provisionPostgresTestSchema(t, schema)
 	instanceID := newPostgresTestID(t)
 	options := testPostgresStoreOptions(schema, instanceID, bytesOf(73))
-	postgres, err := newPostgresStore(
-		context.Background(),
-		log.NewNOPFactory().NewLogger("committed-query-postgres"),
-		options,
-	)
+	postgres, err := newPostgresStore(context.Background(), options)
 	if err != nil {
 		t.Fatal(err)
 	}

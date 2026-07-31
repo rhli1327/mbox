@@ -36,7 +36,7 @@ func (s *postgresStore) applyBatch(
 	if !opened {
 		return errors.New("traffic statistics PostgreSQL store is not open")
 	}
-	records, identity, err := encodePostgresBatch(batch)
+	records, identity, err := encodeHistoryBatch(batch)
 	if err != nil {
 		return err
 	}
@@ -85,7 +85,7 @@ func (s *postgresStore) verifyExistingPostgresBatch(
 	ctx context.Context,
 	transaction pgx.Tx,
 	batchID uuid.UUID,
-	expected postgresBatchIdentity,
+	expected historyBatchIdentity,
 ) error {
 	var checksum []byte
 	var count int
@@ -121,7 +121,7 @@ func equalPostgresBatchTime(left *time.Time, right *time.Time) bool {
 func (s *postgresStore) upsertPostgresBatchRecord(
 	ctx context.Context,
 	transaction pgx.Tx,
-	record postgresBatchRecord,
+	record historyBatchRecord,
 ) error {
 	var groupPath []string
 	if err := json.Unmarshal([]byte(record.Key.GroupPath), &groupPath); err != nil {

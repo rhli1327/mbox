@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +22,6 @@ type trafficMigrationSource struct {
 	path             string
 	database         *bbolt.DB
 	originalInfo     os.FileInfo
-	lockedInfo       os.FileInfo
 	fingerprint      [sha256.Size]byte
 	size             int64
 	revisionKey      []byte
@@ -105,7 +103,6 @@ func openTrafficMigrationSource(
 		!os.SameFile(info, lockedInfo) {
 		return nil, ErrTrafficMigrationSourceChanged
 	}
-	source.lockedInfo = lockedInfo
 	lockedFingerprint, lockedSize, err := fingerprintTrafficMigrationSource(ctx, path)
 	if err != nil ||
 		lockedFingerprint != beforeFingerprint ||
@@ -529,9 +526,4 @@ func fingerprintTrafficMigrationSource(
 
 func trafficMigrationSourceInvalid() error {
 	return ErrTrafficMigrationSourceInvalid
-}
-
-func trafficMigrationRevisionBytes(revision string) []byte {
-	value, _ := hex.DecodeString(revision)
-	return value
 }
