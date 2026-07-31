@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const currentPostgresSchemaVersion = 2
+const currentPostgresSchemaVersion = 3
 
 //go:embed postgres_migrations/*.sql
 var postgresMigrationFiles embed.FS
@@ -379,6 +379,51 @@ var postgresRequiredColumns = []postgresRequiredColumn{
 	{"mbox_traffic_ingest_batches", "first_bucket", "timestamp with time zone", true, 0, 0},
 	{"mbox_traffic_ingest_batches", "last_bucket", "timestamp with time zone", true, 0, 0},
 	{"mbox_traffic_ingest_batches", "accepted_at", "timestamp with time zone", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "instance_id", "text", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "migration_id", "text", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "source_fingerprint", "bytea", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "source_size", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "mode", "text", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "from_bucket", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "to_bucket", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "active_config_revision", "text", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "routing_fingerprint", "bytea", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "source_target_available_from", "timestamp with time zone", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "source_destination_available_from", "timestamp with time zone", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "effective_target_available_from", "timestamp with time zone", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "effective_destination_available_from", "timestamp with time zone", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "summary_cursor", "bytea", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "target_cursor", "bytea", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "summary_processed", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "summary_inserted", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "summary_skipped", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "target_processed", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "target_inserted", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "target_skipped", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "summary_complete", "boolean", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "target_complete", "boolean", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "created_at", "timestamp with time zone", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "updated_at", "timestamp with time zone", false, 0, 0},
+	{"mbox_traffic_migration_jobs", "completed_at", "timestamp with time zone", true, 0, 0},
+	{"mbox_traffic_migration_revisions", "instance_id", "text", false, 0, 0},
+	{"mbox_traffic_migration_revisions", "migration_id", "text", false, 0, 0},
+	{"mbox_traffic_migration_revisions", "config_revision", "text", false, 0, 0},
+	{"mbox_traffic_migration_revisions", "first_bucket", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_revisions", "last_bucket", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_revisions", "summary_records", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_revisions", "target_records", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_batches", "instance_id", "text", false, 0, 0},
+	{"mbox_traffic_migration_batches", "migration_id", "text", false, 0, 0},
+	{"mbox_traffic_migration_batches", "kind", "text", false, 0, 0},
+	{"mbox_traffic_migration_batches", "cursor_start", "bytea", false, 0, 0},
+	{"mbox_traffic_migration_batches", "cursor_end", "bytea", false, 0, 0},
+	{"mbox_traffic_migration_batches", "payload_sha256", "bytea", false, 0, 0},
+	{"mbox_traffic_migration_batches", "record_count", "integer", false, 0, 0},
+	{"mbox_traffic_migration_batches", "inserted_count", "integer", false, 0, 0},
+	{"mbox_traffic_migration_batches", "skipped_count", "integer", false, 0, 0},
+	{"mbox_traffic_migration_batches", "first_bucket", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_batches", "last_bucket", "bigint", false, 0, 0},
+	{"mbox_traffic_migration_batches", "applied_at", "timestamp with time zone", false, 0, 0},
 }
 
 type postgresRequiredConstraint struct {
@@ -547,6 +592,175 @@ var postgresRequiredConstraints = []postgresRequiredConstraint{
 		"mbox_traffic_ingest_batches_bucket_pair",
 		"first_bucket IS NULL AND last_bucket IS NULL OR first_bucket IS NOT NULL AND last_bucket IS NOT NULL AND last_bucket >= first_bucket",
 	),
+	postgresPrimaryKey(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_pkey",
+		"instance_id",
+		"migration_id",
+	),
+	postgresInstanceForeignKey(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_instance_fk",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_id_format",
+		"migration_id ~ '^[0-9a-f]{64}$'::text",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_source_fingerprint_length",
+		"octet_length(source_fingerprint) = 32",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_source_size",
+		"source_size >= 0",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_mode",
+		"mode = 'restore'::text",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_bounds",
+		"from_bucket < to_bucket",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_active_revision_format",
+		"active_config_revision ~ '^[0-9a-f]{32}$'::text",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_routing_fingerprint_length",
+		"octet_length(routing_fingerprint) = 32",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_source_availability_order",
+		"source_destination_available_from >= source_target_available_from",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_effective_availability_order",
+		"effective_destination_available_from >= effective_target_available_from",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_effective_availability_floor",
+		"effective_target_available_from >= source_target_available_from AND effective_destination_available_from >= source_destination_available_from",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_summary_cursor_length",
+		"octet_length(summary_cursor) = ANY (ARRAY[0, 40])",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_target_cursor_length",
+		"octet_length(target_cursor) = ANY (ARRAY[0, 40])",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_summary_counts",
+		"summary_processed >= 0 AND summary_inserted >= 0 AND summary_skipped >= 0 AND (summary_inserted + summary_skipped) = summary_processed",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_target_counts",
+		"target_processed >= 0 AND target_inserted >= 0 AND target_skipped >= 0 AND (target_inserted + target_skipped) = target_processed",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_jobs_completion",
+		"(completed_at IS NOT NULL) = (summary_complete AND target_complete)",
+	),
+	postgresPrimaryKey(
+		"mbox_traffic_migration_revisions",
+		"mbox_traffic_migration_revisions_pkey",
+		"instance_id",
+		"migration_id",
+		"config_revision",
+	),
+	{
+		Table:             "mbox_traffic_migration_revisions",
+		Name:              "mbox_traffic_migration_revisions_job_fk",
+		Type:              "f",
+		Columns:           []string{"instance_id", "migration_id"},
+		ReferencedTable:   "mbox_traffic_migration_jobs",
+		ReferencedColumns: []string{"instance_id", "migration_id"},
+		DeleteAction:      "c",
+	},
+	postgresCheck(
+		"mbox_traffic_migration_revisions",
+		"mbox_traffic_migration_revisions_revision_format",
+		"config_revision ~ '^[0-9a-f]{32}$'::text",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_revisions",
+		"mbox_traffic_migration_revisions_bucket_order",
+		"first_bucket <= last_bucket",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_revisions",
+		"mbox_traffic_migration_revisions_counts",
+		"summary_records >= 0 AND target_records >= 0 AND (summary_records + target_records) > 0",
+	),
+	postgresPrimaryKey(
+		"mbox_traffic_migration_batches",
+		"mbox_traffic_migration_batches_pkey",
+		"instance_id",
+		"migration_id",
+		"kind",
+		"cursor_end",
+	),
+	{
+		Table:   "mbox_traffic_migration_batches",
+		Name:    "mbox_traffic_migration_batches_start_key",
+		Type:    "u",
+		Columns: []string{"instance_id", "migration_id", "kind", "cursor_start"},
+	},
+	{
+		Table:             "mbox_traffic_migration_batches",
+		Name:              "mbox_traffic_migration_batches_job_fk",
+		Type:              "f",
+		Columns:           []string{"instance_id", "migration_id"},
+		ReferencedTable:   "mbox_traffic_migration_jobs",
+		ReferencedColumns: []string{"instance_id", "migration_id"},
+		DeleteAction:      "c",
+	},
+	postgresCheck(
+		"mbox_traffic_migration_batches",
+		"mbox_traffic_migration_batches_kind",
+		"kind = ANY (ARRAY['summary'::text, 'target'::text])",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_batches",
+		"mbox_traffic_migration_batches_cursors",
+		"(octet_length(cursor_start) = ANY (ARRAY[0, 40])) AND octet_length(cursor_end) = 40 AND cursor_end > cursor_start",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_batches",
+		"mbox_traffic_migration_batches_payload_length",
+		"octet_length(payload_sha256) = 32",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_batches",
+		"mbox_traffic_migration_batches_record_count",
+		"record_count >= 1 AND record_count <= 10000",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_batches",
+		"mbox_traffic_migration_batches_counts",
+		"inserted_count >= 0 AND skipped_count >= 0 AND (inserted_count + skipped_count) = record_count",
+	),
+	postgresCheck(
+		"mbox_traffic_migration_batches",
+		"mbox_traffic_migration_batches_bucket_order",
+		"first_bucket <= last_bucket",
+	),
 }
 
 func postgresPrimaryKey(
@@ -619,6 +833,12 @@ var postgresRequiredIndexes = []postgresRequiredIndex{
 		Method:    "btree",
 		Columns:   []string{"instance_id", "destination_ip", "bucket_start"},
 		Predicate: "destination_ip <> ''::text",
+	},
+	{
+		Table:   "mbox_traffic_migration_jobs",
+		Name:    "mbox_traffic_migration_jobs_source_idx",
+		Method:  "btree",
+		Columns: []string{"instance_id", "source_fingerprint", "created_at"},
 	},
 }
 
@@ -756,8 +976,24 @@ func postgresRequiredColumnDefault(table string, column string) string {
 		"mbox_traffic_instances.created_at",
 		"mbox_traffic_instances.updated_at",
 		"mbox_traffic_config_revisions.created_at",
-		"mbox_traffic_ingest_batches.accepted_at":
+		"mbox_traffic_ingest_batches.accepted_at",
+		"mbox_traffic_migration_jobs.created_at",
+		"mbox_traffic_migration_jobs.updated_at",
+		"mbox_traffic_migration_batches.applied_at":
 		return "clock_timestamp()"
+	case "mbox_traffic_migration_jobs.summary_cursor",
+		"mbox_traffic_migration_jobs.target_cursor":
+		return "'\\x'::bytea"
+	case "mbox_traffic_migration_jobs.summary_processed",
+		"mbox_traffic_migration_jobs.summary_inserted",
+		"mbox_traffic_migration_jobs.summary_skipped",
+		"mbox_traffic_migration_jobs.target_processed",
+		"mbox_traffic_migration_jobs.target_inserted",
+		"mbox_traffic_migration_jobs.target_skipped":
+		return "0"
+	case "mbox_traffic_migration_jobs.summary_complete",
+		"mbox_traffic_migration_jobs.target_complete":
+		return "false"
 	default:
 		return ""
 	}

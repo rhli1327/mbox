@@ -320,6 +320,20 @@ jobs:
             -tags with_postgres \
             -run '^TestTrafficStatisticsSchemaMigrateCommandIntegration$' \
             ./cmd/sing-box
+          env GOWORK=off GOTOOLCHAIN=local go test \
+            -mod=readonly \
+            -count=1 \
+            -timeout=20m \
+            -tags with_postgres \
+            -run '^TestTrafficStatisticsMigrateCommandPG14' \
+            ./cmd/sing-box
+          env GOWORK=off GOTOOLCHAIN=local go test \
+            -mod=readonly \
+            -count=1 \
+            -timeout=20m \
+            -tags 'with_postgres,with_quic' \
+            -run '^TestTrafficStatisticsMigrateCommandPG14Hysteria2Detour$' \
+            ./cmd/sing-box
 
       - name: Stop PostgreSQL
         if: always()

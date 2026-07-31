@@ -227,6 +227,184 @@ func TestPostgresSchemaUpgradeV1ToV2(t *testing.T) {
 	}
 }
 
+func TestPostgresSchemaUpgradeV2ToV3(t *testing.T) {
+	schema := newPostgresTestSchema(t)
+	migrations, err := loadPostgresMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentPostgresSchemaVersion != 3 || len(migrations) != 3 {
+		t.Fatalf(
+			"PostgreSQL traffic schema v3 is absent: version=%d migrations=%d",
+			currentPostgresSchemaVersion,
+			len(migrations),
+		)
+	}
+	pool, err := newPostgresPool(context.Background(), testPostgresConnectionOptions(
+		testPostgresSchemaDSN,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = migratePostgresSchema(
+		context.Background(),
+		pool,
+		schema,
+		migrations[:2],
+	); err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	var before bool
+	testPostgresAdminQueryRow(
+		t,
+		"SELECT to_regclass($1) IS NOT NULL",
+		schema+".mbox_traffic_migration_jobs",
+	).Scan(&before)
+	if before {
+		pool.Close()
+		t.Fatal("v3 migration table exists before v3 upgrade")
+	}
+	if err = migratePostgresSchema(
+		context.Background(),
+		pool,
+		schema,
+		migrations,
+	); err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	if err = validatePostgresSchema(
+		context.Background(),
+		pool,
+		schema,
+		migrations,
+	); err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	pool.Close()
+	for _, table := range []string{
+		"mbox_traffic_migration_jobs",
+		"mbox_traffic_migration_revisions",
+		"mbox_traffic_migration_batches",
+	} {
+		var exists bool
+		testPostgresAdminQueryRow(
+			t,
+			"SELECT to_regclass($1) IS NOT NULL",
+			schema+"."+table,
+		).Scan(&exists)
+		if !exists {
+			t.Fatalf("v3 table %s was not created", table)
+		}
+	}
+	rollbackSchema := newPostgresTestSchema(t)
+	rollbackPool, err := newPostgresPool(
+		context.Background(),
+		testPostgresConnectionOptions(testPostgresSchemaDSN),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rollbackPool.Close()
+	if err = migratePostgresSchema(
+		context.Background(),
+		rollbackPool,
+		rollbackSchema,
+		migrations[:2],
+	); err != nil {
+		t.Fatal(err)
+	}
+	broken := append([]postgresMigration(nil), migrations...)
+	broken[2].SQL += "\n-- mbox:statement\nSELECT phase5_broken_migration;"
+	broken[2].Checksum = sha256.Sum256([]byte(broken[2].SQL))
+	if err = migratePostgresSchema(
+		context.Background(),
+		rollbackPool,
+		rollbackSchema,
+		broken,
+	); err == nil {
+		t.Fatal("broken v3 migration unexpectedly succeeded")
+	}
+	var rolledBack bool
+	testPostgresAdminQueryRow(
+		t,
+		"SELECT to_regclass($1) IS NULL",
+		rollbackSchema+".mbox_traffic_migration_jobs",
+	).Scan(&rolledBack)
+	if !rolledBack {
+		t.Fatal("failed v3 migration left migration metadata tables")
+	}
+}
+
+func TestPostgresSchemaV3MigrationMetadataValidated(t *testing.T) {
+	migrations, err := loadPostgresMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrations) != 3 ||
+		migrations[2].Version != 3 ||
+		migrations[2].Name != "003_migration.sql" {
+		t.Fatalf("PostgreSQL traffic migration metadata schema is absent: %#v", migrations)
+	}
+	for name, mutation := range map[string]string{
+		"extra_column": `
+ALTER TABLE %s.mbox_traffic_migration_jobs
+ADD COLUMN future_column text`,
+		"column_default": `
+ALTER TABLE %s.mbox_traffic_migration_jobs
+ALTER COLUMN summary_cursor SET DEFAULT decode('00', 'hex')`,
+		"unique_constraint": `
+ALTER TABLE %s.mbox_traffic_migration_batches
+DROP CONSTRAINT mbox_traffic_migration_batches_start_key`,
+		"source_index": `
+DROP INDEX %s.mbox_traffic_migration_jobs_source_idx`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			schema := newPostgresTestSchema(t)
+			if err := migrateTestPostgresSchema(
+				t,
+				testPostgresSchemaDSN,
+				schema,
+			); err != nil {
+				t.Fatal(err)
+			}
+			testPostgresAdminExec(
+				t,
+				fmt.Sprintf(mutation, pgx.Identifier{schema}.Sanitize()),
+			)
+			err := validateTestPostgresSchema(t, testPostgresSchemaDSN, schema)
+			if !errors.Is(err, ErrPostgresSchemaIncompatible) {
+				t.Fatalf("unexpected validation result: %v", err)
+			}
+		})
+	}
+}
+
+func TestTrafficStatisticsMigrationIDVector(t *testing.T) {
+	var sourceFingerprint [sha256.Size]byte
+	var routingFingerprint [sha256.Size]byte
+	for index := range sourceFingerprint {
+		sourceFingerprint[index] = byte(index)
+		routingFingerprint[index] = byte(255 - index)
+	}
+	const expected = "fd30390f14268e30476d48e45f2785d37ff68407dbc7da55a1799a0931e0f6b3"
+	actual := buildTrafficMigrationID(
+		sourceFingerprint,
+		123456,
+		"migration-fixture-instance",
+		"mbox_fixed",
+		routingFingerprint,
+		math.MinInt64,
+		math.MaxInt64,
+		"00112233445566778899aabbccddeeff",
+	)
+	if actual != expected {
+		t.Fatalf("migration ID framing changed: %s", actual)
+	}
+}
+
 func TestPostgresSchemaFailedMigrationRollsBack(t *testing.T) {
 	schema := newPostgresTestSchema(t)
 	migrations, err := loadPostgresMigrations()
@@ -266,8 +444,8 @@ func TestPostgresSchemaRejectsFutureVersion(t *testing.T) {
 	}
 	testPostgresAdminExec(t, fmt.Sprintf(`
 INSERT INTO %s.mbox_traffic_schema_migrations (version, name, checksum)
-VALUES (3, '003_future.sql', decode(repeat('00', 32), 'hex'))
-`, pgx.Identifier{schema}.Sanitize()))
+VALUES (%d, 'future.sql', decode(repeat('00', 32), 'hex'))
+`, pgx.Identifier{schema}.Sanitize(), currentPostgresSchemaVersion+1))
 	err := validateTestPostgresSchema(t, testPostgresSchemaDSN, schema)
 	if !errors.Is(err, ErrPostgresSchemaFuture) {
 		t.Fatalf("unexpected validation error: %v", err)
