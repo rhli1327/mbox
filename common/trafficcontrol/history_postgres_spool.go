@@ -147,24 +147,25 @@ type postgresSpoolStore struct {
 	remote  postgresSpoolRemote
 	options postgresSpoolStoreOptions
 
-	revisionAccess sync.RWMutex
-	access         sync.Mutex
-	opening        bool
-	opened         bool
-	closed         bool
-	openDone       chan struct{}
-	configRevision string
-	cleanupAt      time.Time
-	wakeCh         chan struct{}
-	cleanupCh      chan struct{}
-	workerCtx      context.Context
-	cancel         context.CancelFunc
-	wg             sync.WaitGroup
-	closeDone      chan struct{}
-	closeErr       error
-	readCalls      sync.WaitGroup
-	snapshots      map[*postgresSpoolStoreSnapshot]struct{}
-	commitProgress chan struct{}
+	revisionAccess      sync.RWMutex
+	access              sync.Mutex
+	opening             bool
+	opened              bool
+	closed              bool
+	openDone            chan struct{}
+	initialConnectError error
+	configRevision      string
+	cleanupAt           time.Time
+	wakeCh              chan struct{}
+	cleanupCh           chan struct{}
+	workerCtx           context.Context
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
+	closeDone           chan struct{}
+	closeErr            error
+	readCalls           sync.WaitGroup
+	snapshots           map[*postgresSpoolStoreSnapshot]struct{}
+	commitProgress      chan struct{}
 
 	statusAccess      sync.RWMutex
 	state             postgresSpoolState
@@ -238,6 +239,7 @@ func (s *postgresSpoolStore) Open() (historyStoreState, error) {
 		_, remoteErr := s.connectRemote()
 
 		s.access.Lock()
+		s.initialConnectError = remoteErr
 		s.opening = false
 		if s.closed {
 			close(openDone)
@@ -257,6 +259,12 @@ func (s *postgresSpoolStore) Open() (historyStoreState, error) {
 		s.signal(s.wakeCh)
 		return state, nil
 	}
+}
+
+func (s *postgresSpoolStore) initialConnectErr() error {
+	s.access.Lock()
+	defer s.access.Unlock()
+	return s.initialConnectError
 }
 
 func (s *postgresSpoolStore) Close() error {

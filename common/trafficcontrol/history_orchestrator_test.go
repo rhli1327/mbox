@@ -14,6 +14,31 @@ import (
 	"github.com/sagernet/sing-box/log"
 )
 
+func TestHistoryCanDeferOpenUntilStart(t *testing.T) {
+	store := new(fakeHistoryStore)
+	history := newHistory(
+		context.Background(),
+		log.NewNOPFactory().NewLogger("traffic-test"),
+		store,
+	)
+	history.openStage = adapter.StartStateStart
+	if err := history.Start(adapter.StartStateInitialize); err != nil {
+		t.Fatal("initialize history:", err)
+	}
+	if store.openCalls != 0 {
+		t.Fatalf("store opened during initialize: %d calls", store.openCalls)
+	}
+	if err := history.Start(adapter.StartStateStart); err != nil {
+		t.Fatal("start history:", err)
+	}
+	if store.openCalls != 1 {
+		t.Fatalf("store open calls = %d, want 1", store.openCalls)
+	}
+	if err := history.Close(); err != nil {
+		t.Fatal("close history:", err)
+	}
+}
+
 func TestHistoryRecordDeltaRemainsMemoryOnly(t *testing.T) {
 	store := &fakeHistoryStore{
 		state: historyStoreState{

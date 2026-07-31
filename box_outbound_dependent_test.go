@@ -13,6 +13,7 @@ import (
 	boxInbound "github.com/sagernet/sing-box/adapter/inbound"
 	boxOutbound "github.com/sagernet/sing-box/adapter/outbound"
 	boxService "github.com/sagernet/sing-box/adapter/service"
+	"github.com/sagernet/sing-box/common/trafficcontrol"
 	"github.com/sagernet/sing-box/dns"
 	dnsLocal "github.com/sagernet/sing-box/dns/transport/local"
 	"github.com/sagernet/sing-box/log"
@@ -20,6 +21,56 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
+
+func TestAppendTrafficHistoryService(t *testing.T) {
+	history := trafficcontrol.NewHistory(
+		context.Background(),
+		log.NewNOPFactory().NewLogger("traffic-test"),
+		trafficcontrol.HistoryOptions{Path: t.TempDir() + "/traffic.db"},
+	)
+	for _, test := range []struct {
+		name      string
+		traffic   option.ResolvedTrafficStatisticsOptions
+		dependent bool
+	}{
+		{
+			name: "bolt",
+			traffic: option.ResolvedTrafficStatisticsOptions{
+				StorageType: option.TrafficStatisticsStorageTypeBolt,
+			},
+		},
+		{
+			name: "direct postgres",
+			traffic: option.ResolvedTrafficStatisticsOptions{
+				StorageType: option.TrafficStatisticsStorageTypePostgres,
+			},
+		},
+		{
+			name: "detoured postgres",
+			traffic: option.ResolvedTrafficStatisticsOptions{
+				StorageType: option.TrafficStatisticsStorageTypePostgres,
+				Dialer:      option.DialerOptions{Detour: "proxy"},
+			},
+			dependent: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			internal, dependent := appendTrafficHistoryService(
+				nil,
+				nil,
+				history,
+				test.traffic,
+			)
+			if test.dependent {
+				if len(internal) != 0 || len(dependent) != 1 || dependent[0] != history {
+					t.Fatalf("unexpected service buckets: internal=%#v dependent=%#v", internal, dependent)
+				}
+			} else if len(internal) != 1 || internal[0] != history || len(dependent) != 0 {
+				t.Fatalf("unexpected service buckets: internal=%#v dependent=%#v", internal, dependent)
+			}
+		})
+	}
+}
 
 func TestBoxOutboundDependentLifecycleOrder(t *testing.T) {
 	recorder := new(boxLifecycleRecorder)

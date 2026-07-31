@@ -156,6 +156,7 @@ type History struct {
 	targetsFrom      time.Time
 	destinationsFrom time.Time
 	store            historyStore
+	openStage        adapter.StartStage
 
 	storeAccess sync.RWMutex
 	flushAccess sync.Mutex
@@ -185,6 +186,7 @@ func newHistory(ctx context.Context, logger log.ContextLogger, store historyStor
 		ctx:         ctx,
 		logger:      logger,
 		store:       store,
+		openStage:   adapter.StartStateInitialize,
 		accepting:   true,
 		pending:     make(historyBatch),
 		queryAccess: make(chan struct{}, historyQueryParallel),
@@ -199,8 +201,7 @@ func (h *History) Name() string {
 }
 
 func (h *History) Start(stage adapter.StartStage) error {
-	switch stage {
-	case adapter.StartStateInitialize:
+	if stage == h.openStage {
 		h.storeAccess.Lock()
 		defer h.storeAccess.Unlock()
 		state, err := h.store.Open()
@@ -210,7 +211,8 @@ func (h *History) Start(stage adapter.StartStage) error {
 		h.configRevision = state.configRevision
 		h.targetsFrom = state.targetsFrom
 		h.destinationsFrom = state.destinationsFrom
-	case adapter.StartStateStart:
+	}
+	if stage == adapter.StartStateStart {
 		h.loopWait.Add(1)
 		go h.loop()
 	}

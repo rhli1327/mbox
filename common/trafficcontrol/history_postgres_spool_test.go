@@ -169,6 +169,82 @@ func TestPostgresSpoolStoreDegradedOnFirstRetryableOpen(t *testing.T) {
 	}
 }
 
+func TestPostgresSpoolStoreCapturesInitialReconcileFailure(t *testing.T) {
+	spool, initial, err := openHistorySpool(historySpoolTestOptions(t, 1<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = spool.Append(historySpoolTestBatch(1)); err != nil {
+		t.Fatal(err)
+	}
+	remote := &fakePostgresSpoolRemote{
+		state: historySpoolRemoteTestState(historySpoolRemoteAliasRevision),
+	}
+	store := newPostgresSpoolStore(
+		spool,
+		initial,
+		remote,
+		postgresSpoolStoreOptions{},
+	)
+	if _, err = store.Open(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := store.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	})
+	if err = store.initialConnectErr(); !errors.Is(err, ErrPostgresRevisionConflict) {
+		t.Fatalf("initial connect error = %v, want revision conflict", err)
+	}
+	if calls := remote.openCallCount(); calls != 1 {
+		t.Fatalf("remote Open calls = %d, want 1", calls)
+	}
+}
+
+func TestPostgresProductionStoreStrictReturnsInitialReconcileFailure(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			spool, initial, err := openHistorySpool(
+				historySpoolTestOptions(t, 1<<20),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = spool.Append(historySpoolTestBatch(1)); err != nil {
+				t.Fatal(err)
+			}
+			spoolStore := newPostgresSpoolStore(
+				spool,
+				initial,
+				&fakePostgresSpoolRemote{
+					state: historySpoolRemoteTestState(
+						historySpoolRemoteAliasRevision,
+					),
+				},
+				postgresSpoolStoreOptions{},
+			)
+			store := &postgresProductionStore{
+				postgresSpoolStore: spoolStore,
+				strict:             strict,
+			}
+			_, err = store.Open()
+			if strict {
+				if !errors.Is(err, ErrPostgresRevisionConflict) {
+					t.Fatalf("strict Open error = %v, want revision conflict", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("degraded Open error = %v, want nil", err)
+			}
+			if err = store.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestPostgresSpoolStorePermanentStopsRemote(t *testing.T) {
 	remote := &fakePostgresSpoolRemote{
 		apply: func(context.Context, uuid.UUID, historyBatch) error {
@@ -988,6 +1064,12 @@ func (r *fakePostgresSpoolRemote) Cancel() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+func (r *fakePostgresSpoolRemote) openCallCount() int {
+	r.access.Lock()
+	defer r.access.Unlock()
+	return r.openCalls
 }
 
 func (r *fakePostgresSpoolRemote) applyCallsCopy() []fakePostgresSpoolApplyCall {

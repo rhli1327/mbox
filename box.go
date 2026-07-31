@@ -204,6 +204,7 @@ func New(options Options) (*Box, error) {
 	service.MustRegister[log.Factory](ctx, logFactory)
 
 	var internalServices []adapter.LifecycleService
+	var outboundDependentServices []adapter.LifecycleService
 	routeOptions := common.PtrValueOrDefault(options.Route)
 	certificateOptions := common.PtrValueOrDefault(options.Certificate)
 	if C.IsAndroid || certificateOptions.Store != "" && certificateOptions.Store != C.CertificateStoreSystem ||
@@ -507,9 +508,12 @@ func New(options Options) (*Box, error) {
 			service.MustRegister[adapter.V2RayServer](ctx, v2rayServer)
 		}
 	}
-	if trafficHistory != nil {
-		internalServices = append(internalServices, trafficHistory)
-	}
+	internalServices, outboundDependentServices = appendTrafficHistoryService(
+		internalServices,
+		outboundDependentServices,
+		trafficHistory,
+		resolvedTrafficStatistics,
+	)
 	if ntpOptions.Enabled {
 		if ntpOptions.WriteToSystem {
 			err = adapter.CheckSecurityFeature(ctx, "NTP `write_to_system`")
@@ -533,26 +537,43 @@ func New(options Options) (*Box, error) {
 		internalServices = append(internalServices, adapter.NewLifecycleService(ntpService, "ntp service"))
 	}
 	result := &Box{
-		network:             networkManager,
-		endpoint:            endpointManager,
-		inbound:             inboundManager,
-		outbound:            outboundManager,
-		dnsTransport:        dnsTransportManager,
-		service:             serviceManager,
-		certificateProvider: certificateProviderManager,
-		dnsRouter:           dnsRouter,
-		connection:          connectionManager,
-		router:              router,
-		httpClientService:   httpClientService,
-		createdAt:           createdAt,
-		debugOptions:        debugOptions,
-		logFactory:          logFactory,
-		logger:              logFactory.Logger(),
-		internalService:     internalServices,
-		done:                make(chan struct{}),
+		network:                  networkManager,
+		endpoint:                 endpointManager,
+		inbound:                  inboundManager,
+		outbound:                 outboundManager,
+		dnsTransport:             dnsTransportManager,
+		service:                  serviceManager,
+		certificateProvider:      certificateProviderManager,
+		dnsRouter:                dnsRouter,
+		connection:               connectionManager,
+		router:                   router,
+		httpClientService:        httpClientService,
+		createdAt:                createdAt,
+		debugOptions:             debugOptions,
+		logFactory:               logFactory,
+		logger:                   logFactory.Logger(),
+		internalService:          internalServices,
+		outboundDependentService: outboundDependentServices,
+		done:                     make(chan struct{}),
 	}
 	trafficHistoryOwned = false
 	return result, nil
+}
+
+func appendTrafficHistoryService(
+	internalServices []adapter.LifecycleService,
+	outboundDependentServices []adapter.LifecycleService,
+	trafficHistory *trafficcontrol.History,
+	traffic option.ResolvedTrafficStatisticsOptions,
+) ([]adapter.LifecycleService, []adapter.LifecycleService) {
+	if trafficHistory == nil {
+		return internalServices, outboundDependentServices
+	}
+	if traffic.StorageType == option.TrafficStatisticsStorageTypePostgres &&
+		traffic.Dialer.Detour != "" {
+		return internalServices, append(outboundDependentServices, trafficHistory)
+	}
+	return append(internalServices, trafficHistory), outboundDependentServices
 }
 
 func (s *Box) PreStart() error {
