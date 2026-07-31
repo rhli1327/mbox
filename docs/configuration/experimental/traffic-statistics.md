@@ -38,10 +38,289 @@ Path to the traffic statistics database.
 path resolution.
 
 Each route-path row has an opaque `config_revision`. It is a keyed HMAC of the
-serialized parsed configuration. The random HMAC key is stored in the traffic
-database, so the revision is stable for the same configuration and database
-but is not comparable across databases. It does not expose configuration
-secrets and is not a portable content hash.
+serialized parsed configuration. The random HMAC key is stored with the traffic
+state, so the revision is stable for the same configuration and instance but is
+not comparable across independent storage identities. It does not expose
+configuration secrets and is not a portable content hash.
+
+### Configuration examples and storage selection
+
+The legacy object without `storage` continues to select Bolt:
+
+<!-- mbox-test:traffic-statistics-bolt -->
+```json
+{
+  "experimental": {
+    "traffic_statistics": {
+      "enabled": true,
+      "path": "traffic.db"
+    }
+  }
+}
+```
+<!-- mbox-test:end -->
+
+`path` defaults to `traffic.db`. Relative paths use the normal mbox
+base-directory resolution. Setting both the legacy `path` and `storage` is
+invalid. With an explicit storage object, `storage.type` must be `bolt` or
+`postgres`.
+
+This direct PostgreSQL example deliberately uses the database `observability`;
+an arbitrary database selected by the DSN is valid and no database named
+`traffic` is required:
+
+<!-- mbox-test:traffic-statistics-postgres-direct -->
+```json
+{
+  "experimental": {
+    "traffic_statistics": {
+      "enabled": true,
+      "storage": {
+        "type": "postgres",
+        "dsn": "postgres://mbox_data@db.example/observability?sslmode=verify-full&sslrootcert=/etc/mbox/postgresql-ca.crt"
+      }
+    }
+  }
+}
+```
+<!-- mbox-test:end -->
+
+The minimal PostgreSQL example resolves to schema `public`,
+`schema_management: auto`, four maximum and one minimum-idle connection,
+`connect_timeout: 10s`, `statement_timeout: 30s`, identity file
+`traffic-instance.json`, spool file `traffic-spool.db`, spool capacity 256 MiB,
+overflow policy `drop_oldest`, and startup policy `degraded`.
+
+This example shows every PostgreSQL operational control and sends the logical
+database TCP stream through `hy2-out`:
+
+<!-- mbox-test:traffic-statistics-postgres-detour -->
+```json
+{
+  "experimental": {
+    "traffic_statistics": {
+      "enabled": true,
+      "instance_id": "edge-a",
+      "identity_path": "traffic-instance.json",
+      "storage": {
+        "type": "postgres",
+        "dsn": "postgres://mbox_data@db.internal/observability?sslmode=disable",
+        "schema": "mbox_traffic",
+        "schema_management": "validate",
+        "dialer": {
+          "detour": "hy2-out"
+        },
+        "max_open_connections": 8,
+        "min_idle_connections": 2,
+        "connect_timeout": "15s",
+        "statement_timeout": "45s"
+      },
+      "spool": {
+        "path": "traffic-spool.db",
+        "max_size": "512MB",
+        "overflow": "drop_oldest"
+      },
+      "startup_policy": "strict"
+    }
+  }
+}
+```
+<!-- mbox-test:end -->
+
+Only `dialer.detour` is accepted under PostgreSQL storage. Configuration files
+use the normal root loading and merge mechanism: `-c/--config`,
+`-C/--config-directory`, and `-D/--directory`. There is no additional DSN
+environment-expansion layer.
+
+| Field | Storage | Meaning and default |
+|-------|---------|---------------------|
+| `enabled` | both | Enables collection, persistence, and the REST resources. Default: `false`. |
+| `path` | legacy Bolt | Bolt path. Default: `traffic.db`. Mutually exclusive with `storage`. |
+| `instance_id` | PostgreSQL | Stable per-instance identity. Empty loads or creates the identity file. |
+| `identity_path` | PostgreSQL | Persisted identity path. Default: `traffic-instance.json`. |
+| `storage.type` | explicit | `bolt` or `postgres`; required when `storage` is present. |
+| `storage.path` | explicit Bolt | Bolt path. Default: `traffic.db`. |
+| `storage.dsn` | PostgreSQL | Required pgx connection string; selects the existing database through either the URI database component or the pgx `dbname` keyword. No database named `traffic` is required. |
+| `storage.schema` | PostgreSQL | Valid identifier. Default: `public`. |
+| `storage.schema_management` | PostgreSQL | `auto` or `validate`. Default: `auto`. |
+| `storage.dialer.detour` | PostgreSQL | Optional outbound tag for the logical database TCP stream. |
+| `storage.max_open_connections` | PostgreSQL | Pool maximum. Default: `4`; minimum: `1`. |
+| `storage.min_idle_connections` | PostgreSQL | Idle minimum. Default: `1`; no greater than the maximum. |
+| `storage.connect_timeout` | PostgreSQL | Positive connection timeout. Default: `10s`. |
+| `storage.statement_timeout` | PostgreSQL | Positive operation timeout. Default: `30s`. |
+| `spool.path` | PostgreSQL | Local durable queue. Default: `traffic-spool.db`. |
+| `spool.max_size` | PostgreSQL | Logical capacity. Default: 256 MiB. |
+| `spool.overflow` | PostgreSQL | Only `drop_oldest` is supported. |
+| `startup_policy` | PostgreSQL | `degraded` or `strict`. Default: `degraded`. |
+
+### PostgreSQL ownership and schema lifecycle
+
+PostgreSQL 14 and newer are supported. The server, selected database, login
+roles, and grants must already exist. The database name comes entirely from
+`storage.dsn`; mbox never executes `CREATE DATABASE`, and neither the schema
+role nor the runtime role needs superuser or `CREATEDB`.
+
+With `schema_management: auto`, mbox may create the configured schema and its
+own objects, acquires a schema advisory lock, verifies embedded migration
+checksums, and applies migrations transactionally where PostgreSQL permits. It
+does not create databases or roles. With `schema_management: validate`, it
+performs no DDL and requires the exact compatible schema version, currently
+version 3. Missing, incompatible, future, checksum, authentication, and
+privilege failures are classified without returning raw connection secrets.
+
+An administrator can apply the same embedded migrations with:
+
+```bash
+mbox tools traffic-statistics schema migrate
+```
+
+This command loads the normal configured PostgreSQL connection and performs
+schema auto migration. It is currently direct-only. If the configured storage
+uses a detour, it returns the stable detour-not-ready error. Use production
+`auto` after outbound startup, or run the command with a separate direct
+administration configuration.
+
+For a database `observability`, custom schema `mbox_traffic`, schema role
+`mbox_schema_admin`, and runtime role `mbox_data`, a least-privilege deployment
+normally grants:
+
+- the schema role `CONNECT` on `observability`, enough database/schema DDL
+  privilege to create or upgrade `mbox_traffic`, and ownership or equivalent
+  rights over mbox-owned tables, indexes, constraints, and the migration
+  ledger;
+- the validate-only runtime role `CONNECT` on `observability`, `USAGE` on
+  `mbox_traffic`, `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on the mbox-owned
+  tables, plus read access required to validate the migration ledger.
+
+Update runtime grants after upgrades introduce new tables. Schema version 3
+owns:
+
+| Object | Purpose |
+|--------|---------|
+| `mbox_traffic_instances` | Per-instance identity and availability metadata. |
+| `mbox_traffic_config_revisions` | Opaque routing configuration revisions. |
+| `mbox_traffic_minute_summary` | Minute-level route-path totals. |
+| `mbox_traffic_minute_targets` | Minute-level destination detail. |
+| `mbox_traffic_ingest_batches` | Accepted durable-batch identities for exactly-once effect. |
+| `mbox_traffic_migration_jobs` | Offline migration identity, selection, state, and fingerprint. |
+| `mbox_traffic_migration_revisions` | Migrated revision metadata. |
+| `mbox_traffic_migration_batches` | Durable migration cursor and marker chain. |
+
+### First run, startup, and local durability
+
+- `Box.New` validates options, resolves or atomically creates identity, derives
+  the keyed revision, opens and validates the local durable spool, constructs
+  a PostgreSQL pool factory without connecting, and registers history services.
+- The first remote PostgreSQL connection is made during `Box.Start`, after the
+  selected outbound can dial. It initializes or validates schema, reconciles
+  remote identity and revision state, and starts ordered recovery and delivery.
+
+Local identity or spool failures always fail construction. `strict` returns the
+initial remote failure and closes the inner store. `degraded` keeps the local
+durable spool and retry worker after a retryable first remote failure, lets
+proxy traffic continue, and returns committed-query HTTP 503 until available.
+Permanent errors require operator correction.
+
+Production identity selection is explicit `instance_id`, then persisted
+identity, then a generated UUID. The default identity file is atomically
+written with mode 0600. Identity is independent from the spool. Writes become
+durable locally before delivery is awakened, retain batch IDs across restart,
+and drain older batches first. PostgreSQL accepted-batch identity provides
+exactly-once remote effect.
+
+The only overflow behavior is `drop_oldest`. Dropped data is acceptable
+telemetry loss, not billing behavior. Do not inspect, copy, replace, or open a
+live spool with another writer. Protect identity and spool as sensitive backup
+state; restoring one without matching spool/database state can cause identity
+or revision conflicts.
+
+### TLS, detours, consistency, and availability
+
+Direct connections need no detour. Both `sslmode=disable` and
+`sslmode=verify-full` with `sslrootcert` are supported. pgx owns TLS above the
+logical connection. TLS is independent of the selected detour: a detour neither
+disables nor requires it. The stream remains logical TCP even when the outbound
+uses UDP/QUIC; Hysteria2 is a tested logical-TCP-over-QUIC path. Missing or
+UDP-only non-stream outbounds fail clearly. Database self-traffic is excluded
+from user traffic accounting.
+
+Bolt queries retain the in-memory pending overlay. PostgreSQL queries establish
+a durable committed boundary before opening the remote snapshot. Filtering,
+aggregation, sorting, totals, and pagination use that single consistent
+snapshot. A successful stale remote result is never substituted. Timeout or
+unavailability maps to stable, redacted HTTP 503; explicit client cancellation
+remains cancellation.
+
+### Offline Bolt migration
+
+```bash
+mbox tools traffic-statistics migrate
+```
+
+The command uses normal root configuration loading. The target must resolve to
+configured PostgreSQL; DSN, schema, and detour settings come from that
+configuration.
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--source` | `traffic.db` | Source Bolt database. |
+| `--instance-id` | empty | Target instance identity. |
+| `--batch-size` | `500` | Source records per transaction. |
+| `--from` | empty | Inclusive RFC 3339 minute boundary. |
+| `--to` | empty | Exclusive RFC 3339 minute boundary. |
+| `--resume` | empty | Expected deterministic migration ID. |
+| `--active-config-revision` | empty | Active historical revision. |
+| `--dry-run` | `false` | Validate and compare without persistent writes. |
+
+The Bolt source must be offline. Lock contention fails clearly; source bytes
+and metadata remain unchanged. The complete raw Bolt domain is validated before
+runtime/network work. Summary/target records, availability, revisions, revision
+key, and unsigned counters are preserved.
+
+Safe restore inserts missing rows, skips exact rows, and stops on conflicts.
+Migration IDs and cursor ranges are deterministic. Interrupted runs continue
+after the durable marker chain; uncertain commits reconcile exactly once.
+`--from` is inclusive and `--to` exclusive. `--dry-run` performs zero
+persistent writes and forces schema validation-only. Progress JSON goes to
+stderr and one final result JSON object goes to stdout.
+
+Normal production cleanup retains 30 days, but offline migration does not apply
+that retention cutoff: it restores every selected historical source row,
+including rows older than 30 days, unless the operator narrows the restore with
+`--from` or `--to`. Normal production cleanup may later remove restored rows
+outside its retention window.
+
+There is no migration `--dsn`, `--schema`, `--merge`, or `--delete-source`
+flag. Inherited `--outbound` is rejected. Direct mode constructs no outbound
+runtime. Detour mode constructs its scoped network-namespace, DNS
+transport/router, network, connection/router, outbound, endpoint, and
+certificate dependency graph, plus an HTTP-client manager only when a Hysteria2
+outbound realm requires it. The registered inbound manager creates and starts
+zero inbound objects or listeners. No API, traffic collector, NTP, cache-file
+service, or debug server is started. Migration never deletes the source and
+does not support an online snapshot.
+
+### Monitoring, recovery, and security
+
+A successful query proves its requested committed boundary was available.
+Redacted HTTP 503 means the boundary could not be committed and read within the
+request context. Startup errors distinguish local durability, retryable remote,
+and permanent classified failures. Administrators can inspect instance,
+accepted-batch, and migration metadata; operators can monitor spool file size
+and filesystem health externally.
+
+No new public traffic-statistics readiness or status endpoint exists. Internal
+queue, drop, retry, flush, and error-category fields are not public API.
+Transient recovery is automatic under `degraded`. Authentication,
+missing-database, permission, incompatible/future schema, identity, revision,
+and collision errors require correction. Disk-full, permission, corruption,
+and lock errors are local durability failures; do not blindly delete the spool.
+
+DSNs and passwords are sensitive. There is no command-line DSN override.
+Restrict configuration, identity, and spool permissions. Errors and HTTP
+responses are redacted, but traffic history contains sensitive destinations,
+so authenticate API listeners and use trusted bindings. Rows and REST views are
+per instance; there is no cross-instance REST aggregate.
 
 ### Storage and accounting
 

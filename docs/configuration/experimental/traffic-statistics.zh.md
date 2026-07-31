@@ -34,9 +34,259 @@
 留空时使用 `traffic.db`。相对路径遵循 sing-box 的标准基础路径解析规则。
 
 每条路由路径记录都带有不透明的 `config_revision`。它根据解析后的配置序列化
-内容计算 keyed HMAC，随机 HMAC 密钥保存在流量数据库中。因此，同一数据库内
-相同配置的 revision 保持稳定，不同数据库之间不可比较；它不会泄露配置密钥，
-也不是可移植的内容哈希。
+内容计算 keyed HMAC，随机 HMAC 密钥随流量状态持久化。因此，同一存储身份内
+相同配置的 revision 保持稳定，不同的独立存储身份之间不可比较；它不会泄露
+配置密钥，也不是可移植的内容哈希。
+
+### 配置示例与存储选择
+
+不配置 `storage` 的旧格式仍选择 Bolt：
+
+<!-- mbox-test:traffic-statistics-bolt -->
+```json
+{
+  "experimental": {
+    "traffic_statistics": {
+      "enabled": true,
+      "path": "traffic.db"
+    }
+  }
+}
+```
+<!-- mbox-test:end -->
+
+`path` 默认是 `traffic.db`，相对路径使用 mbox 的标准基础目录解析。
+旧式 `path` 与 `storage` 不能同时设置。显式配置存储时，
+`storage.type` 只能是 `bolt` 或 `postgres`。
+
+下面的直连 PostgreSQL 示例特意使用 `observability` 数据库。DSN 可以选择
+任意数据库，不要求数据库名为 `traffic`：
+
+<!-- mbox-test:traffic-statistics-postgres-direct -->
+```json
+{
+  "experimental": {
+    "traffic_statistics": {
+      "enabled": true,
+      "storage": {
+        "type": "postgres",
+        "dsn": "postgres://mbox_data@db.example/observability?sslmode=verify-full&sslrootcert=/etc/mbox/postgresql-ca.crt"
+      }
+    }
+  }
+}
+```
+<!-- mbox-test:end -->
+
+最小 PostgreSQL 配置会解析为 schema `public`、`schema_management: auto`、
+最多 4 个连接、最少 1 个空闲连接、`connect_timeout: 10s`、
+`statement_timeout: 30s`、身份文件 `traffic-instance.json`、spool 文件
+`traffic-spool.db`、spool 容量 256 MiB、溢出策略 `drop_oldest` 和启动策略
+`degraded`。
+
+下面的示例显式展示所有 PostgreSQL 运维控制，并通过 `hy2-out` 传输逻辑
+数据库 TCP 流：
+
+<!-- mbox-test:traffic-statistics-postgres-detour -->
+```json
+{
+  "experimental": {
+    "traffic_statistics": {
+      "enabled": true,
+      "instance_id": "edge-a",
+      "identity_path": "traffic-instance.json",
+      "storage": {
+        "type": "postgres",
+        "dsn": "postgres://mbox_data@db.internal/observability?sslmode=disable",
+        "schema": "mbox_traffic",
+        "schema_management": "validate",
+        "dialer": {
+          "detour": "hy2-out"
+        },
+        "max_open_connections": 8,
+        "min_idle_connections": 2,
+        "connect_timeout": "15s",
+        "statement_timeout": "45s"
+      },
+      "spool": {
+        "path": "traffic-spool.db",
+        "max_size": "512MB",
+        "overflow": "drop_oldest"
+      },
+      "startup_policy": "strict"
+    }
+  }
+}
+```
+<!-- mbox-test:end -->
+
+PostgreSQL 存储的 dialer 只接受 `dialer.detour`。配置文件沿用根命令的标准
+加载与合并机制：`-c/--config`、`-C/--config-directory` 和
+`-D/--directory`。系统没有额外的 DSN 环境变量展开层。
+
+| 字段 | 存储 | 含义与默认值 |
+|------|------|--------------|
+| `enabled` | 两者 | 启用采集、持久化和 REST 资源。默认 `false`。 |
+| `path` | 旧式 Bolt | Bolt 路径，默认 `traffic.db`，与 `storage` 互斥。 |
+| `instance_id` | PostgreSQL | 稳定实例身份；为空时读取或创建身份文件。 |
+| `identity_path` | PostgreSQL | 身份文件，默认 `traffic-instance.json`。 |
+| `storage.type` | 显式存储 | `bolt` 或 `postgres`；出现 `storage` 时必填。 |
+| `storage.path` | 显式 Bolt | Bolt 路径，默认 `traffic.db`。 |
+| `storage.dsn` | PostgreSQL | 必填的 pgx 连接串，通过 URI 的 database component 或 pgx `dbname` 关键字选择已存在的数据库。不要求数据库名为 `traffic`。 |
+| `storage.schema` | PostgreSQL | 有效标识符，默认 `public`。 |
+| `storage.schema_management` | PostgreSQL | `auto` 或 `validate`，默认 `auto`。 |
+| `storage.dialer.detour` | PostgreSQL | 逻辑数据库 TCP 流使用的可选出站 tag。 |
+| `storage.max_open_connections` | PostgreSQL | 最大连接数，默认 `4`，最小 `1`。 |
+| `storage.min_idle_connections` | PostgreSQL | 最少空闲连接，默认 `1`，不能大于最大值。 |
+| `storage.connect_timeout` | PostgreSQL | 正数连接超时，默认 `10s`。 |
+| `storage.statement_timeout` | PostgreSQL | 正数操作超时，默认 `30s`。 |
+| `spool.path` | PostgreSQL | 本地持久队列，默认 `traffic-spool.db`。 |
+| `spool.max_size` | PostgreSQL | 逻辑容量，默认 256 MiB。 |
+| `spool.overflow` | PostgreSQL | 仅支持 `drop_oldest`。 |
+| `startup_policy` | PostgreSQL | `degraded` 或 `strict`，默认 `degraded`。 |
+
+### PostgreSQL 所有权与 schema 生命周期
+
+支持 PostgreSQL 14 及更高版本。服务器、DSN 选择的数据库、登录角色和授权都
+必须预先存在。数据库名完全来自 `storage.dsn`；mbox 从不执行
+`CREATE DATABASE`，schema 角色和运行时角色都不需要 superuser 或
+`CREATEDB`。
+
+使用 `schema_management: auto` 时，mbox 可以创建配置的 schema 和自身对象，
+取得 schema advisory lock，校验内嵌迁移 checksum，并在 PostgreSQL 允许的
+范围内以事务应用迁移；它不会创建数据库或角色。使用
+`schema_management: validate` 时不执行 DDL，并要求精确兼容的 schema 版本，
+当前为版本 3。缺失、不兼容、未来版本、checksum、鉴权和权限错误都会分类，
+不会返回原始连接密钥。
+
+管理员可以应用相同的内嵌迁移：
+
+```bash
+mbox tools traffic-statistics schema migrate
+```
+
+该命令读取标准配置的 PostgreSQL 连接并执行 schema 自动迁移，目前只支持
+直连。若配置的存储使用 detour，会返回稳定的 detour-not-ready 错误。可在
+出站启动后使用生产 `auto`，或给管理命令提供单独的直连管理配置。
+
+以数据库 `observability`、自定义 schema `mbox_traffic`、schema 角色
+`mbox_schema_admin` 和运行时角色 `mbox_data` 为例，最小权限部署通常授予：
+
+- schema 角色对 `observability` 的 `CONNECT`，创建或升级 `mbox_traffic`
+  所需的数据库/schema DDL 权限，以及 mbox 表、索引、约束和迁移 ledger 的
+  所有权或等效权限；
+- validate-only 运行时角色对 `observability` 的 `CONNECT`、对
+  `mbox_traffic` 的 `USAGE`、对 mbox 表的 `SELECT`、`INSERT`、`UPDATE`、
+  `DELETE`，以及验证迁移 ledger 所需的读取权限。
+
+schema 升级新增表后应更新运行时授权。版本 3 包含：
+
+| 对象 | 用途 |
+|------|------|
+| `mbox_traffic_instances` | 每实例身份和可用性元数据。 |
+| `mbox_traffic_config_revisions` | 不透明路由配置 revision。 |
+| `mbox_traffic_minute_summary` | 分钟级路由路径汇总。 |
+| `mbox_traffic_minute_targets` | 分钟级目标明细。 |
+| `mbox_traffic_ingest_batches` | 用于远端恰好一次效果的已接受持久批次身份。 |
+| `mbox_traffic_migration_jobs` | 离线迁移身份、选择范围、状态和 fingerprint。 |
+| `mbox_traffic_migration_revisions` | 已迁移 revision 元数据。 |
+| `mbox_traffic_migration_batches` | 持久迁移游标和 marker 链。 |
+
+### 首次运行、启动与本地持久性
+
+- `Box.New` 验证选项，读取或原子创建身份，派生 keyed revision，打开并验证
+  本地持久 spool，在不连接的情况下构造 PostgreSQL pool factory，并注册历史
+  服务。
+- 第一次远端 PostgreSQL 连接发生在 `Box.Start`，且在所选出站已经可以拨号
+  之后。此时初始化或验证 schema、协调远端身份/revision 状态，并启动有序恢复
+  与投递。
+
+本地身份或 spool 失败在两种策略下都会使构造失败。`strict` 会返回首次远端错误
+并关闭内部存储。`degraded` 会保留本地持久 spool 和重试 worker，允许代理流量
+继续工作，并在已提交查询边界可用前返回 HTTP 503。永久错误需要运维人员修正。
+
+生产身份的选择顺序是显式 `instance_id`、持久身份、生成的 UUID。默认身份文件
+以 0600 模式原子写入。身份独立于 spool。写入会先在本地持久化再唤醒投递，
+批次 ID 跨重启保持稳定，并按旧批次优先排空。PostgreSQL 已接受批次身份使每个
+持久批次在远端产生恰好一次效果。
+
+唯一的溢出行为是 `drop_oldest`。丢弃数据是允许的遥测损失，不是计费语义。
+不要用其他 writer 检查、复制、替换或打开正在使用的 spool。身份与 spool 是
+敏感备份状态；只恢复其中一部分而不匹配数据库状态可能导致身份或 revision
+冲突。
+
+### TLS、detour、一致性与可用性
+
+直连不需要 detour。支持 `sslmode=disable`，也支持带 `sslrootcert` 的
+`sslmode=verify-full`。pgx 在逻辑连接之上负责 PostgreSQL TLS。TLS 与所选
+detour 相互独立：detour 既不会禁用也不会强制 TLS。即使出站使用 UDP/QUIC，
+数据库流仍是逻辑 TCP；Hysteria2 是已测试的 logical-TCP-over-QUIC 路径。
+缺失出站或只支持 UDP、不能承载 stream 的出站会明确失败。数据库自身流量不会
+递归计入用户流量。
+
+Bolt 查询保持现有的内存 pending overlay。PostgreSQL 查询会建立持久化的已提交
+边界，再打开远端 snapshot。过滤、聚合、排序、totals 和分页使用同一个一致性
+snapshot；系统不会用成功但过期的远端结果替代。超时或不可用映射为稳定、脱敏
+的 HTTP 503；客户端显式取消仍保持取消语义。
+
+### 离线 Bolt 迁移
+
+```bash
+mbox tools traffic-statistics migrate
+```
+
+该命令使用标准根配置加载。目标必须解析为已配置的 PostgreSQL；DSN、schema 和
+detour 都来自该配置。
+
+| 参数 | 默认值 | 含义 |
+|------|--------|------|
+| `--source` | `traffic.db` | Bolt 源数据库。 |
+| `--instance-id` | 空 | 目标实例身份。 |
+| `--batch-size` | `500` | 每个事务的源记录数。 |
+| `--from` | 空 | 包含的 RFC 3339 分钟下界。 |
+| `--to` | 空 | 不包含的 RFC 3339 分钟上界。 |
+| `--resume` | 空 | 预期的确定性迁移 ID。 |
+| `--active-config-revision` | 空 | 恢复状态的活跃历史 revision。 |
+| `--dry-run` | `false` | 验证、比较且不执行持久写入。 |
+
+Bolt 源必须离线。锁竞争会明确失败；源字节和元数据保持不变。在构造 runtime 或
+访问网络之前会验证完整的原始 Bolt 数据域。summary/target 记录、可用性、
+revision、revision key 和无符号计数器都会保留。
+
+安全恢复模式插入缺失行、跳过完全相同行并在冲突时停止。迁移 ID 和游标范围是
+确定性的。中断后从持久 marker 链继续；不确定的提交会按恰好一次语义协调。
+`--from` 包含下界，`--to` 不包含上界。`--dry-run` 执行零持久化写入并强制
+validate-only。进度 JSON 写入 stderr，最终唯一结果 JSON 对象写入 stdout。
+
+正常生产清理保留 30 天，但离线迁移不应用该保留期截止条件：它会恢复每一条选中
+的历史源记录，包括早于 30 天的记录，除非运维人员使用 `--from` 或 `--to`
+缩小恢复范围。正常生产清理随后可能删除超出保留窗口的已恢复记录。
+
+迁移没有 `--dsn`、`--schema`、`--merge` 或 `--delete-source`；继承的
+`--outbound` 会被拒绝。直连模式不构造出站 runtime。detour 模式构造有作用域的
+network-namespace、DNS transport/router、network、connection/router、
+outbound、endpoint 和 certificate 依赖图，并且仅在 Hysteria2 出站 realm
+需要时才构造并启动 HTTP-client manager。注册的 inbound manager 创建并启动
+零个入站对象或监听器。不会启动 API、traffic collector、NTP、cache-file
+service 或 debug server。迁移不会删除 Bolt 源，也不支持在线 snapshot。
+
+### 监控、恢复与安全
+
+成功查询证明请求的已提交边界当时可用。脱敏的 HTTP 503 表示该边界无法在请求
+context 内提交并读取。启动错误会区分本地持久性、可重试远端和永久分类错误。
+管理员可以查看实例、已接受批次和迁移元数据；运维人员可以从外部监控 spool
+文件大小与文件系统健康。
+
+不存在新的公开流量统计 readiness 或 status 端点。内部队列、丢弃、重试、
+flush 和错误类别字段不属于公开 API。`degraded` 会自动恢复瞬时故障；鉴权、
+数据库缺失、权限、不兼容/未来 schema、身份、revision 和碰撞错误需要人工修正。
+磁盘满、权限、损坏和锁错误属于本地持久性故障，不应盲目删除 spool。
+
+DSN 和密码属于敏感信息，系统没有命令行 DSN override。应限制配置、身份和
+spool 的权限。错误和 HTTP 响应会脱敏，但流量历史包含敏感目标，因此 API
+监听器应启用鉴权并只绑定可信网络。行和 REST 视图按实例隔离，不提供跨实例
+REST 聚合。计数器继续使用十进制 JSON 字符串。正常保留期为 30 天
+（30 days）。
 
 ### 存储与统计口径
 

@@ -4760,6 +4760,9 @@
         "v2ray_api": {
           "$ref": "#/$defs/V2RayAPIOptions"
         },
+        "traffic_statistics": {
+          "$ref": "#/$defs/TrafficStatisticsOptions"
+        },
         "debug": {
           "$ref": "#/$defs/DebugOptions"
         }
@@ -6414,6 +6417,91 @@
             },
             "realm": {
               "$ref": "#/$defs/Hysteria2InboundRealm"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "mieru"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "listen": {
+              "type": "string"
+            },
+            "listen_port": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "bind_interface": {
+              "type": "string"
+            },
+            "routing_mark": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "reuse_addr": {
+              "type": "boolean"
+            },
+            "netns": {
+              "type": "string",
+              "x-tag-reference": "network_namespace"
+            },
+            "disable_tcp_keep_alive": {
+              "type": "boolean"
+            },
+            "tcp_keep_alive": {
+              "$ref": "#/$defs/Duration"
+            },
+            "tcp_keep_alive_interval": {
+              "$ref": "#/$defs/Duration"
+            },
+            "tcp_fast_open": {
+              "type": "boolean"
+            },
+            "tcp_multi_path": {
+              "type": "boolean"
+            },
+            "udp_fragment": {
+              "type": "boolean"
+            },
+            "udp_timeout": {
+              "$ref": "#/$defs/UDPTimeout"
+            },
+            "detour": {
+              "type": "string",
+              "x-tag-reference": "inbound"
+            },
+            "users": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/MieruUser"
+              }
+            },
+            "transport": {
+              "type": "string"
+            },
+            "traffic_pattern": {
+              "type": "string"
+            },
+            "user_hint_is_mandatory": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -8519,6 +8607,18 @@
         },
         "timestamp": {
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MieruUser": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -11611,6 +11711,156 @@
             },
             "realm": {
               "$ref": "#/$defs/Hysteria2Realm"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "mieru"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "detour": {
+              "type": "string",
+              "x-tag-reference": "outbound"
+            },
+            "bind_interface": {
+              "type": "string"
+            },
+            "inet4_bind_address": {
+              "type": "string"
+            },
+            "inet6_bind_address": {
+              "type": "string"
+            },
+            "bind_address_no_port": {
+              "type": "boolean"
+            },
+            "protect_path": {
+              "type": "string"
+            },
+            "routing_mark": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "reuse_addr": {
+              "type": "boolean"
+            },
+            "netns": {
+              "type": "string",
+              "x-tag-reference": "network_namespace"
+            },
+            "connect_timeout": {
+              "$ref": "#/$defs/Duration"
+            },
+            "tcp_fast_open": {
+              "type": "boolean"
+            },
+            "tcp_multi_path": {
+              "type": "boolean"
+            },
+            "disable_tcp_keep_alive": {
+              "type": "boolean"
+            },
+            "tcp_keep_alive": {
+              "$ref": "#/$defs/Duration"
+            },
+            "tcp_keep_alive_interval": {
+              "$ref": "#/$defs/Duration"
+            },
+            "udp_fragment": {
+              "type": "boolean"
+            },
+            "domain_resolver": {
+              "$ref": "#/$defs/DomainResolver"
+            },
+            "network_strategy": {
+              "type": "string",
+              "enum": [
+                "default",
+                "fallback",
+                "hybrid"
+              ]
+            },
+            "network_type": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/InterfaceType"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/InterfaceType"
+                  }
+                }
+              ]
+            },
+            "fallback_network_type": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/InterfaceType"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/InterfaceType"
+                  }
+                }
+              ]
+            },
+            "fallback_delay": {
+              "$ref": "#/$defs/Duration"
+            },
+            "server": {
+              "type": "string"
+            },
+            "server_port": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "server_ports": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "transport": {
+              "type": "string"
+            },
+            "username": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            },
+            "multiplexing": {
+              "type": "string"
+            },
+            "traffic_pattern": {
+              "type": "string"
             }
           },
           "required": [
@@ -16995,6 +17245,92 @@
         },
         "password": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TrafficStatisticsOptions": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "identity_path": {
+          "type": "string"
+        },
+        "storage": {
+          "$ref": "#/$defs/TrafficStatisticsStorageOptions"
+        },
+        "spool": {
+          "$ref": "#/$defs/TrafficStatisticsSpoolOptions"
+        },
+        "startup_policy": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TrafficStatisticsSpoolOptions": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "max_size": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "overflow": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TrafficStatisticsStorageOptions": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "dsn": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "schema_management": {
+          "type": "string"
+        },
+        "dialer": {
+          "$ref": "#/$defs/DialerOptions"
+        },
+        "max_open_connections": {
+          "type": "integer"
+        },
+        "min_idle_connections": {
+          "type": "integer"
+        },
+        "connect_timeout": {
+          "$ref": "#/$defs/Duration"
+        },
+        "statement_timeout": {
+          "$ref": "#/$defs/Duration"
         }
       },
       "additionalProperties": false
