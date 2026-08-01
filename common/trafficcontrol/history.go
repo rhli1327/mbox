@@ -2,26 +2,16 @@ package trafficcontrol
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math"
-	"os"
-	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/sagernet/bbolt"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/log"
-	"github.com/sagernet/sing/service/filemanager"
 )
 
 const (
@@ -50,15 +40,6 @@ const (
 
 	HistorySortOrderAscending  = "asc"
 	HistorySortOrderDescending = "desc"
-)
-
-var (
-	historyBucket              = []byte("traffic_statistics_v1")
-	historyTargetsBucket       = []byte("traffic_statistics_targets_v1")
-	historyMetadataBucket      = []byte("traffic_statistics_metadata_v1")
-	historyConfigRevisionKey   = []byte("config_revision_hmac_key")
-	historyTargetsFromKey      = []byte("target_available_from")
-	historyDestinationsFromKey = []byte("destination_available_from")
 )
 
 type HistoryOptions struct {
@@ -162,24 +143,29 @@ type historyRecord struct {
 	historyCounters
 }
 
-var _ adapter.LifecycleService = (*History)(nil)
+var (
+	_ adapter.LifecycleService = (*History)(nil)
+	_ DeltaRecorder            = (*History)(nil)
+	_ HistoryReader            = (*History)(nil)
+)
 
 type History struct {
 	ctx              context.Context
 	logger           log.ContextLogger
-	path             string
-	configContent    []byte
 	configRevision   string
 	targetsFrom      time.Time
 	destinationsFrom time.Time
+	store            historyStore
+	openStage        adapter.StartStage
 
-	databaseAccess sync.RWMutex
-	flushAccess    sync.Mutex
-	access         sync.Mutex
-	accepting      bool
-	pending        map[historyKey]historyCounters
-	db             *bbolt.DB
-	queryAccess    chan struct{}
+	storeAccess sync.RWMutex
+	flushAccess sync.Mutex
+	access      sync.Mutex
+	accepting   bool
+	pending     historyBatch
+	queryAccess chan struct{}
+	queryCtx    context.Context
+	cancelQuery context.CancelFunc
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -188,19 +174,25 @@ type History struct {
 }
 
 func NewHistory(ctx context.Context, logger log.ContextLogger, options HistoryOptions) *History {
-	path := options.Path
-	if path == "" {
-		path = "traffic.db"
+	return newHistory(ctx, logger, newBoltStore(ctx, options))
+}
+
+func newHistory(ctx context.Context, logger log.ContextLogger, store historyStore) *History {
+	if ctx == nil {
+		ctx = context.Background()
 	}
+	queryCtx, cancelQuery := context.WithCancel(ctx)
 	return &History{
-		ctx:           ctx,
-		logger:        logger,
-		path:          filemanager.BasePath(ctx, os.ExpandEnv(path)),
-		configContent: append([]byte(nil), options.ConfigContent...),
-		accepting:     true,
-		pending:       make(map[historyKey]historyCounters),
-		queryAccess:   make(chan struct{}, historyQueryParallel),
-		done:          make(chan struct{}),
+		ctx:         ctx,
+		logger:      logger,
+		store:       store,
+		openStage:   adapter.StartStateInitialize,
+		accepting:   true,
+		pending:     make(historyBatch),
+		queryAccess: make(chan struct{}, historyQueryParallel),
+		queryCtx:    queryCtx,
+		cancelQuery: cancelQuery,
+		done:        make(chan struct{}),
 	}
 }
 
@@ -209,104 +201,22 @@ func (h *History) Name() string {
 }
 
 func (h *History) Start(stage adapter.StartStage) error {
-	switch stage {
-	case adapter.StartStateInitialize:
-		return h.open()
-	case adapter.StartStateStart:
+	if stage == h.openStage {
+		h.storeAccess.Lock()
+		defer h.storeAccess.Unlock()
+		state, err := h.store.Open()
+		if err != nil {
+			return err
+		}
+		h.configRevision = state.configRevision
+		h.targetsFrom = state.targetsFrom
+		h.destinationsFrom = state.destinationsFrom
+	}
+	if stage == adapter.StartStateStart {
 		h.loopWait.Add(1)
 		go h.loop()
 	}
 	return nil
-}
-
-func (h *History) open() error {
-	parent := filepath.Dir(h.path)
-	if parent != "." {
-		err := filemanager.MkdirAll(h.ctx, parent, 0o755)
-		if err != nil {
-			return err
-		}
-	}
-	const fileMode = 0o600
-	file, err := filemanager.OpenFile(h.ctx, h.path, os.O_RDWR|os.O_CREATE, fileMode)
-	if err != nil {
-		return err
-	}
-	err = file.Close()
-	if err != nil {
-		return err
-	}
-	db, err := bbolt.Open(h.path, fileMode, &bbolt.Options{Timeout: time.Second})
-	if err != nil {
-		return err
-	}
-	err = filemanager.Chown(h.ctx, h.path)
-	if err != nil {
-		db.Close()
-		return err
-	}
-	h.db = db
-	err = h.initializeConfigRevision()
-	if err == nil {
-		err = h.initializeTargetsFrom()
-	}
-	if err == nil {
-		err = h.cleanup(time.Now())
-	}
-	if err != nil {
-		db.Close()
-		h.db = nil
-		return err
-	}
-	return nil
-}
-
-func (h *History) initializeTargetsFrom() error {
-	return h.db.Update(func(tx *bbolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists(historyMetadataBucket)
-		if err != nil {
-			return err
-		}
-		collectionFrom := time.Now().UTC().Truncate(HistoryBucketInterval).Add(HistoryBucketInterval)
-		h.targetsFrom, err = initializeHistoryAvailability(
-			bucket,
-			historyTargetsFromKey,
-			collectionFrom,
-			"target",
-		)
-		if err != nil {
-			return err
-		}
-		destinationCollectionFrom := collectionFrom
-		if h.targetsFrom.After(destinationCollectionFrom) {
-			destinationCollectionFrom = h.targetsFrom
-		}
-		h.destinationsFrom, err = initializeHistoryAvailability(
-			bucket,
-			historyDestinationsFromKey,
-			destinationCollectionFrom,
-			"destination",
-		)
-		if err != nil {
-			return err
-		}
-		if h.destinationsFrom.Before(h.targetsFrom) {
-			return errors.New("invalid traffic statistics destination availability time")
-		}
-		return nil
-	})
-}
-
-func initializeHistoryAvailability(bucket *bbolt.Bucket, key []byte, fallback time.Time, name string) (time.Time, error) {
-	content := bucket.Get(key)
-	if len(content) == 0 {
-		err := bucket.Put(key, historyBucketKeyPrefix(fallback.Unix()))
-		return fallback, err
-	}
-	if len(content) != 8 {
-		return time.Time{}, errors.New("invalid traffic statistics " + name + " availability time")
-	}
-	return time.Unix(int64(binary.BigEndian.Uint64(content)), 0).UTC(), nil
 }
 
 func (h *History) TargetAvailableFrom() time.Time {
@@ -337,42 +247,6 @@ func (h *History) destinationAvailableFromAt(now time.Time) time.Time {
 		return retentionStart
 	}
 	return h.destinationsFrom
-}
-
-func (h *History) initializeConfigRevision() error {
-	defer func() {
-		for index := range h.configContent {
-			h.configContent[index] = 0
-		}
-		h.configContent = nil
-	}()
-	var revisionKey []byte
-	err := h.db.Update(func(tx *bbolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists(historyMetadataBucket)
-		if err != nil {
-			return err
-		}
-		revisionKey = append([]byte(nil), bucket.Get(historyConfigRevisionKey)...)
-		if len(revisionKey) == 0 {
-			revisionKey = make([]byte, sha256.Size)
-			_, err = rand.Read(revisionKey)
-			if err != nil {
-				return err
-			}
-			return bucket.Put(historyConfigRevisionKey, revisionKey)
-		}
-		if len(revisionKey) != sha256.Size {
-			return errors.New("invalid traffic statistics revision key")
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	revisionMAC := hmac.New(sha256.New, revisionKey)
-	_, _ = revisionMAC.Write(h.configContent)
-	h.configRevision = hex.EncodeToString(revisionMAC.Sum(nil)[:historyRevisionSize])
-	return nil
 }
 
 func (h *History) loop() {
@@ -406,10 +280,13 @@ func (h *History) Close() error {
 
 func (h *History) close() error {
 	close(h.done)
+	if h.cancelQuery != nil {
+		h.cancelQuery()
+	}
 	h.loopWait.Wait()
 
-	h.databaseAccess.Lock()
-	defer h.databaseAccess.Unlock()
+	h.storeAccess.Lock()
+	defer h.storeAccess.Unlock()
 	h.flushAccess.Lock()
 	defer h.flushAccess.Unlock()
 	h.access.Lock()
@@ -419,11 +296,7 @@ func (h *History) close() error {
 	// Do not restore a failed final batch: after Close returns the history has
 	// no writable database and must not retain an unreachable pending tail.
 	flushErr := h.flushLocked(false)
-	if h.db == nil {
-		return flushErr
-	}
-	closeErr := h.db.Close()
-	h.db = nil
+	closeErr := h.store.Close()
 	h.access.Lock()
 	clear(h.pending)
 	h.access.Unlock()
@@ -487,8 +360,8 @@ func (h *History) RecordDelta(metadata *TrackerMetadata, uplink int64, downlink 
 }
 
 func (h *History) flush() error {
-	h.databaseAccess.RLock()
-	defer h.databaseAccess.RUnlock()
+	h.storeAccess.RLock()
+	defer h.storeAccess.RUnlock()
 	h.flushAccess.Lock()
 	defer h.flushAccess.Unlock()
 	return h.flushLocked(true)
@@ -501,69 +374,16 @@ func (h *History) flushLocked(restoreOnError bool) error {
 		return nil
 	}
 	pending := h.pending
-	h.pending = make(map[historyKey]historyCounters)
+	h.pending = make(historyBatch)
 	h.access.Unlock()
-	if h.db == nil {
-		if restoreOnError {
-			h.restorePending(pending)
-		}
-		return errors.New("traffic statistics database is not open")
-	}
-	err := h.db.Batch(func(tx *bbolt.Tx) error {
-		summaryBucket, err := tx.CreateBucketIfNotExists(historyBucket)
-		if err != nil {
-			return err
-		}
-		targetsBucket, err := tx.CreateBucketIfNotExists(historyTargetsBucket)
-		if err != nil {
-			return err
-		}
-		for key, delta := range pending {
-			summaryKey := key
-			summaryKey.DestinationDomain = ""
-			summaryKey.DestinationIP = ""
-			err = putHistoryDelta(summaryBucket, summaryKey, delta)
-			if err != nil {
-				return err
-			}
-			if h.targetsFrom.IsZero() || key.Bucket >= h.targetsFrom.Unix() {
-				err = putHistoryDelta(targetsBucket, key, delta)
-				if err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
+	err := h.store.Write(pending)
 	if err != nil && restoreOnError {
 		h.restorePending(pending)
 	}
 	return err
 }
 
-func putHistoryDelta(bucket *bbolt.Bucket, key historyKey, delta historyCounters) error {
-	diskKey, err := encodeHistoryKey(key)
-	if err != nil {
-		return err
-	}
-	record := historyRecordFrom(key, delta)
-	if previous := bucket.Get(diskKey); previous != nil {
-		err = json.Unmarshal(previous, &record)
-		if err != nil {
-			return err
-		}
-		record.UplinkBytes = saturatingAdd(record.UplinkBytes, delta.UplinkBytes)
-		record.DownlinkBytes = saturatingAdd(record.DownlinkBytes, delta.DownlinkBytes)
-		record.Connections = saturatingAdd(record.Connections, delta.Connections)
-	}
-	content, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	return bucket.Put(diskKey, content)
-}
-
-func (h *History) restorePending(pending map[historyKey]historyCounters) {
+func (h *History) restorePending(pending historyBatch) {
 	h.access.Lock()
 	defer h.access.Unlock()
 	if !h.accepting {
@@ -592,243 +412,81 @@ func (h *History) Query(ctx context.Context, query HistoryQuery) (HistoryQueryRe
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	queryCtx, cancelQuery := context.WithCancel(ctx)
+	stopLifecycleCancel := context.AfterFunc(h.queryCtx, cancelQuery)
+	defer func() {
+		stopLifecycleCancel()
+		cancelQuery()
+	}()
+	queryError := func(err error) error {
+		if err != nil &&
+			ctx.Err() == nil &&
+			h.queryCtx.Err() != nil &&
+			errors.Is(err, context.Canceled) {
+			return ErrHistoryUnavailable
+		}
+		return err
+	}
+	if h.queryCtx.Err() != nil {
+		return HistoryQueryResult{}, ErrHistoryUnavailable
+	}
 	select {
 	case h.queryAccess <- struct{}{}:
 		defer func() { <-h.queryAccess }()
-	case <-ctx.Done():
-		return HistoryQueryResult{}, ctx.Err()
+	case <-queryCtx.Done():
+		return HistoryQueryResult{}, queryError(queryCtx.Err())
 	}
 
-	h.databaseAccess.RLock()
-	defer h.databaseAccess.RUnlock()
+	h.storeAccess.RLock()
+	defer h.storeAccess.RUnlock()
+	if err = queryCtx.Err(); err != nil {
+		return HistoryQueryResult{}, queryError(err)
+	}
 
-	// Taking the Bolt read transaction and copying pending deltas under the
-	// flush lock establishes one consistent query boundary. Once the
-	// transaction exists, a later flush can proceed without changing its
-	// database snapshot.
+	// Creating the store snapshot and copying pending deltas under the flush
+	// lock establishes one consistent query boundary. Once the snapshot exists,
+	// a later flush can proceed without changing the persisted side of it.
 	h.flushAccess.Lock()
-	if h.db == nil {
-		h.flushAccess.Unlock()
-		return HistoryQueryResult{}, errors.New("traffic statistics database is not open")
-	}
-	tx, err := h.db.Begin(false)
-	if err != nil {
-		h.flushAccess.Unlock()
-		return HistoryQueryResult{}, err
-	}
-	h.access.Lock()
-	pending := make(map[historyKey]historyCounters, len(h.pending))
-	for key, counters := range h.pending {
-		pending[key] = counters
-	}
-	h.access.Unlock()
-	h.flushAccess.Unlock()
-	defer tx.Rollback()
-	targetAvailableFrom := h.targetAvailableFromAt(time.Now())
-	destinationAvailableFrom := h.destinationAvailableFromAt(time.Now())
-
-	routeTags := filterSet(query.RouteTags)
-	groupTags := filterSet(query.GroupTags)
-	actualOutboundTags := filterSet(query.ActualOutboundTags)
-	destinations := filterSet(query.Destinations)
-	destinationDomains := filterSet(query.DestinationDomains)
-	networks := filterSet(query.Networks)
-	useDestinations := query.GroupBy == HistoryGroupByDestination || len(query.Destinations) > 0
-	useTargets := useDestinations ||
-		query.GroupBy == HistoryGroupByDestinationDomain ||
-		len(query.DestinationDomains) > 0
-	detailAvailableFrom := targetAvailableFrom
-	if useDestinations {
-		detailAvailableFrom = destinationAvailableFrom
-	}
-	rows := make(map[historyDimensions]historyAggregate)
-	merge := func(record historyRecord) error {
-		bucketStart := time.Unix(record.Bucket, 0).UTC()
-		bucketEnd := bucketStart.Add(HistoryBucketInterval)
-		if useTargets && bucketStart.Before(detailAvailableFrom) {
-			return nil
+	var snapshot historyStoreSnapshot
+	pending := make(historyBatch)
+	if committedStore, committed := h.store.(historyStoreCommittedReader); committed {
+		h.access.Lock()
+		pending = h.pending
+		h.pending = make(historyBatch)
+		h.access.Unlock()
+		boundary, commitErr := committedStore.Commit(pending)
+		if commitErr != nil {
+			h.restorePending(pending)
+			h.flushAccess.Unlock()
+			return HistoryQueryResult{}, commitErr
 		}
-		if !query.From.IsZero() && !bucketEnd.After(query.From) {
-			return nil
-		}
-		if !query.To.IsZero() && !bucketStart.Before(query.To) {
-			return nil
-		}
-		var groupPath []string
-		err := json.Unmarshal([]byte(record.GroupPath), &groupPath)
-		if err != nil {
-			return err
-		}
-		if groupPath == nil {
-			groupPath = []string{}
-		}
-		outboundGroup := lastGroupTag(groupPath)
-		destinationDomain := normalizeDestinationDomain(record.DestinationDomain)
-		destination, destinationType := preferredDestination(destinationDomain, record.DestinationIP)
-		if !matchesFilterSet(record.RouteTag, routeTags) ||
-			!matchesFilterSet(outboundGroup, groupTags) ||
-			!matchesFilterSet(record.ActualOutboundTag, actualOutboundTags) ||
-			!matchesFilterSet(destination, destinations) ||
-			!matchesFilterSet(destinationDomain, destinationDomains) ||
-			!matchesFilterSet(record.Network, networks) {
-			return nil
-		}
-
-		dimensions, row := aggregateHistoryRecord(
-			query.GroupBy,
-			record,
-			groupPath,
-			destination,
-			destinationType,
-			destinationDomain,
-			outboundGroup,
-		)
-		aggregate, loaded := rows[dimensions]
-		if !loaded {
-			aggregate.Row = row
-		} else if query.GroupBy == HistoryGroupByActualOutbound &&
-			aggregate.Row.ActualOutboundType != record.ActualOutboundType {
-			// Node aggregation is keyed by tag. An empty type explicitly marks
-			// that the tag represented more than one type in the selected range.
-			aggregate.Row.ActualOutboundType = ""
-		}
-		aggregate.Row.UplinkBytes = saturatingAdd(aggregate.Row.UplinkBytes, record.UplinkBytes)
-		aggregate.Row.DownlinkBytes = saturatingAdd(aggregate.Row.DownlinkBytes, record.DownlinkBytes)
-		aggregate.Row.Connections = saturatingAdd(aggregate.Row.Connections, record.Connections)
-		if aggregate.ActualFrom.IsZero() || bucketStart.Before(aggregate.ActualFrom) {
-			aggregate.ActualFrom = bucketStart
-		}
-		if bucketEnd.After(aggregate.ActualTo) {
-			aggregate.ActualTo = bucketEnd
-		}
-		rows[dimensions] = aggregate
-		return nil
-	}
-
-	selectedBucket := historyBucket
-	if useTargets {
-		selectedBucket = historyTargetsBucket
-	}
-	bucket := tx.Bucket(selectedBucket)
-	if bucket != nil {
-		cursor := bucket.Cursor()
-		var key, content []byte
-		scanFrom := query.From
-		if useTargets && (scanFrom.IsZero() || detailAvailableFrom.After(scanFrom)) {
-			scanFrom = detailAvailableFrom
-		}
-		if scanFrom.IsZero() || scanFrom.Unix() < 0 {
-			key, content = cursor.First()
-		} else {
-			key, content = cursor.Seek(historyBucketKeyPrefix(scanFrom.UTC().Truncate(HistoryBucketInterval).Unix()))
-		}
-		for scanned := 0; key != nil; key, content = cursor.Next() {
-			if scanned&255 == 0 {
-				if err := ctx.Err(); err != nil {
-					return HistoryQueryResult{}, err
-				}
-			}
-			scanned++
-			if len(key) < 8 {
-				continue
-			}
-			bucketTime := time.Unix(int64(binary.BigEndian.Uint64(key[:8])), 0)
-			if !query.To.IsZero() && !bucketTime.Before(query.To) {
-				break
-			}
-			var record historyRecord
-			err := json.Unmarshal(content, &record)
-			if err != nil {
-				return HistoryQueryResult{}, err
-			}
-			err = merge(record)
-			if err != nil {
-				return HistoryQueryResult{}, err
-			}
-		}
-	}
-	scanned := 0
-	for key, counters := range pending {
-		if scanned&255 == 0 {
-			if err := ctx.Err(); err != nil {
-				return HistoryQueryResult{}, err
-			}
-		}
-		scanned++
-		if useTargets && key.Bucket < detailAvailableFrom.Unix() {
-			continue
-		}
-		record := historyRecordFrom(key, counters)
-		if !useTargets {
-			record.DestinationDomain = ""
-			record.DestinationIP = ""
-		}
-		err = merge(record)
-		if err != nil {
-			return HistoryQueryResult{}, err
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return HistoryQueryResult{}, err
-	}
-	resultRows := make([]HistoryRow, 0, len(rows))
-	var totals HistoryCounters
-	var actualFrom, actualTo time.Time
-	search := strings.ToLower(query.Search)
-	visited := 0
-	for _, aggregate := range rows {
-		if visited&255 == 0 {
-			if err := ctx.Err(); err != nil {
-				return HistoryQueryResult{}, err
-			}
-		}
-		visited++
-		row := aggregate.Row
-		if search != "" && !strings.Contains(strings.ToLower(historyRowLabel(query.GroupBy, row)), search) {
-			continue
-		}
-		resultRows = append(resultRows, row)
-		totals.UplinkBytes = saturatingAdd(totals.UplinkBytes, row.UplinkBytes)
-		totals.DownlinkBytes = saturatingAdd(totals.DownlinkBytes, row.DownlinkBytes)
-		totals.Connections = saturatingAdd(totals.Connections, row.Connections)
-		if actualFrom.IsZero() || aggregate.ActualFrom.Before(actualFrom) {
-			actualFrom = aggregate.ActualFrom
-		}
-		if aggregate.ActualTo.After(actualTo) {
-			actualTo = aggregate.ActualTo
-		}
-	}
-	sort.Slice(resultRows, func(i, j int) bool {
-		primary := compareHistoryRows(query.GroupBy, query.SortBy, resultRows[i], resultRows[j])
-		if primary != 0 {
-			if query.SortOrder == HistorySortOrderDescending {
-				return primary > 0
-			}
-			return primary < 0
-		}
-		return compareHistoryRowsCanonical(query.GroupBy, resultRows[i], resultRows[j]) < 0
-	})
-
-	totalRows := len(resultRows)
-	if query.Page > 1 && query.Page-1 > len(resultRows)/query.PageSize {
-		resultRows = []HistoryRow{}
+		pending = make(historyBatch)
+		snapshot, err = committedStore.BeginReadCommitted(queryCtx, boundary)
 	} else {
-		pageStart := (query.Page - 1) * query.PageSize
-		pageEnd := min(pageStart+query.PageSize, len(resultRows))
-		resultRows = resultRows[pageStart:pageEnd]
+		snapshot, err = h.store.BeginRead(queryCtx)
+		if err == nil {
+			h.access.Lock()
+			pending = make(historyBatch, len(h.pending))
+			for key, counters := range h.pending {
+				pending[key] = counters
+			}
+			h.access.Unlock()
+		}
 	}
-	return HistoryQueryResult{
-		TargetAvailableFrom:      targetAvailableFrom,
-		DestinationAvailableFrom: destinationAvailableFrom,
-		ActualFrom:               actualFrom,
-		ActualTo:                 actualTo,
-		GroupBy:                  query.GroupBy,
-		Page:                     query.Page,
-		PageSize:                 query.PageSize,
-		TotalRows:                totalRows,
-		Totals:                   totals,
-		Rows:                     resultRows,
-	}, nil
+	h.flushAccess.Unlock()
+	if err != nil {
+		return HistoryQueryResult{}, queryError(err)
+	}
+	defer snapshot.Close()
+	result, err := snapshot.Query(queryCtx, query, historyQueryOverlay{
+		pending:                  pending,
+		targetAvailableFrom:      h.targetAvailableFromAt(time.Now()),
+		destinationAvailableFrom: h.destinationAvailableFromAt(time.Now()),
+	})
+	if err != nil {
+		return HistoryQueryResult{}, queryError(err)
+	}
+	return result, nil
 }
 
 func normalizeHistoryQuery(query HistoryQuery) (HistoryQuery, error) {
@@ -1095,48 +753,11 @@ func compareUint64(left uint64, right uint64) int {
 }
 
 func (h *History) cleanup(now time.Time) error {
-	h.databaseAccess.RLock()
-	defer h.databaseAccess.RUnlock()
+	h.storeAccess.RLock()
+	defer h.storeAccess.RUnlock()
 	h.flushAccess.Lock()
 	defer h.flushAccess.Unlock()
-	if h.db == nil {
-		return nil
-	}
-	cutoff := now.Add(-HistoryRetention).UTC().Truncate(HistoryBucketInterval).Unix()
-	return h.db.Update(func(tx *bbolt.Tx) error {
-		for _, bucketName := range [][]byte{historyBucket, historyTargetsBucket} {
-			bucket := tx.Bucket(bucketName)
-			if bucket == nil {
-				continue
-			}
-			cursor := bucket.Cursor()
-			for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
-				if len(key) < 8 {
-					continue
-				}
-				if int64(binary.BigEndian.Uint64(key[:8])) >= cutoff {
-					break
-				}
-				err := cursor.Delete()
-				if err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
-}
-
-func encodeHistoryKey(key historyKey) ([]byte, error) {
-	content, err := json.Marshal(key)
-	if err != nil {
-		return nil, err
-	}
-	hash := sha256.Sum256(content)
-	encoded := make([]byte, 8+len(hash))
-	binary.BigEndian.PutUint64(encoded, uint64(key.Bucket))
-	copy(encoded[8:], hash[:])
-	return encoded, nil
+	return h.store.Cleanup(now)
 }
 
 func historyRecordFrom(key historyKey, counters historyCounters) historyRecord {
@@ -1171,10 +792,6 @@ func matchesFilterSet(value string, filter map[string]struct{}) bool {
 	}
 	_, loaded := filter[value]
 	return loaded
-}
-
-func historyBucketKeyPrefix(bucket int64) []byte {
-	return binary.BigEndian.AppendUint64(nil, uint64(bucket))
 }
 
 func saturatingAdd(left uint64, right uint64) uint64 {
