@@ -29,7 +29,7 @@ import (
 	"github.com/sagernet/sing/service"
 )
 
-func TestTrafficStatisticsMigrateCommandPG14Hysteria2Detour(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationHysteria2Detour(t *testing.T) {
 	t.Run(
 		"RealmHTTPClientDependencyAndCloseOrder",
 		testTrafficStatisticsMigrationRuntimeHysteria2Realm,

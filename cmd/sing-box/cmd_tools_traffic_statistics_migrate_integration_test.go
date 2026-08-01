@@ -46,7 +46,7 @@ type trafficMigrationPGHarness struct {
 	instanceID string
 }
 
-func TestTrafficStatisticsMigrateCommandPG14DryRunHasNoWrites(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationDryRunHasNoWrites(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	harness.migrateSchema()
 	result := harness.run(t, "--dry-run")
@@ -89,7 +89,7 @@ WHERE route_tag = 'hysteria-route'
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14DryRunAutoDoesNotApplySchema(
+func TestTrafficStatisticsMigrateCommandIntegrationDryRunAutoDoesNotApplySchema(
 	t *testing.T,
 ) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
@@ -115,7 +115,7 @@ func TestTrafficStatisticsMigrateCommandPG14DryRunAutoDoesNotApplySchema(
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14DryRunRejectsMissingCompletedRow(
+func TestTrafficStatisticsMigrateCommandIntegrationDryRunRejectsMissingCompletedRow(
 	t *testing.T,
 ) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
@@ -138,7 +138,7 @@ WHERE route_tag = 'hysteria-route'
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14DryRunIncompleteJobReportsCommittedPrefixAsSkipped(
+func TestTrafficStatisticsMigrateCommandIntegrationDryRunIncompleteJobReportsCommittedPrefixAsSkipped(
 	t *testing.T,
 ) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
@@ -191,7 +191,7 @@ func TestTrafficStatisticsMigrateCommandPG14DryRunIncompleteJobReportsCommittedP
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14RestoreLossless(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationRestoreLossless(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	before := snapshotTrafficMigrationFixture(t, harness.sourcePath)
 	result := harness.run(t)
@@ -215,7 +215,7 @@ WHERE route_tag = 'selector-route'
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14ExactRerunSkips(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationExactRerunSkips(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	first := harness.run(t)
 	assertTrafficMigrationRestoreResult(t, first, 3, 3, 0, 4, 4, 0)
@@ -226,7 +226,7 @@ func TestTrafficStatisticsMigrateCommandPG14ExactRerunSkips(t *testing.T) {
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14ConflictRollsBackBatch(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationConflictRollsBackBatch(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	previous := migrateBoltTrafficStatisticsToPostgres
 	defer func() { migrateBoltTrafficStatisticsToPostgres = previous }()
@@ -331,7 +331,7 @@ WHERE instance_id = $1
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14InterruptedResume(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationInterruptedResume(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	previous := migrateBoltTrafficStatisticsToPostgres
 	defer func() { migrateBoltTrafficStatisticsToPostgres = previous }()
@@ -366,7 +366,7 @@ func TestTrafficStatisticsMigrateCommandPG14InterruptedResume(t *testing.T) {
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14ResumeSelectionRejectsMismatch(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationResumeSelectionRejectsMismatch(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	harness.run(t)
 	before := harness.tableCount("mbox_traffic_migration_batches")
@@ -382,7 +382,7 @@ func TestTrafficStatisticsMigrateCommandPG14ResumeSelectionRejectsMismatch(t *te
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14RejectsCorruptResumeLedger(
+func TestTrafficStatisticsMigrateCommandIntegrationRejectsCorruptResumeLedger(
 	t *testing.T,
 ) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
@@ -399,7 +399,7 @@ WHERE instance_id = $1
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14UncertainCommitExactlyOnce(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationUncertainCommitExactlyOnce(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	proxy := newUncertainTrafficMigrationProxy(t, harness.targetDSN, 3)
 	harness.targetDSN = proxy.dsn(t, harness.targetDSN)
@@ -415,7 +415,7 @@ func TestTrafficStatisticsMigrateCommandPG14UncertainCommitExactlyOnce(t *testin
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14TimeBoundsAndAvailability(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationTimeBoundsAndAvailability(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	result := harness.run(
 		t,
@@ -441,7 +441,7 @@ WHERE instance_id = $1
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14ZeroRecordKindsCompleteTransactionally(
+func TestTrafficStatisticsMigrateCommandIntegrationZeroRecordKindsCompleteTransactionally(
 	t *testing.T,
 ) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
@@ -486,7 +486,7 @@ WHERE instance_id = $1
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14TargetIdentityAndRevisionContinuity(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationTargetIdentityAndRevisionContinuity(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	harness.run(t)
 	var revisionKey []byte
@@ -541,7 +541,7 @@ INSERT INTO %s.mbox_traffic_instances (
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14StableFingerprintAndMigrationIdentity(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationStableFingerprintAndMigrationIdentity(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	harness.migrateSchema()
 	first := harness.run(t, "--dry-run", "--batch-size", "1")
@@ -606,7 +606,7 @@ func TestTrafficStatisticsMigrateCommandPG14StableFingerprintAndMigrationIdentit
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14DetectsSourceReplacementSameHash(
+func TestTrafficStatisticsMigrateCommandIntegrationDetectsSourceReplacementSameHash(
 	t *testing.T,
 ) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
@@ -657,7 +657,7 @@ func TestTrafficStatisticsMigrateCommandPG14DetectsSourceReplacementSameHash(
 	assertTrafficMigrationFixtureState(t, harness.sourcePath, before)
 }
 
-func TestTrafficStatisticsMigrateCommandPG14UsesConfiguredDatabaseWithoutCreateDatabase(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationUsesConfiguredDatabaseWithoutCreateDatabase(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	before := harness.databaseNames()
 	harness.run(t)
@@ -679,7 +679,7 @@ func TestTrafficStatisticsMigrateCommandPG14UsesConfiguredDatabaseWithoutCreateD
 	).Scan(&version, &database, &createdb); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(version, "14.") ||
+	if !strings.HasPrefix(version, "18.") ||
 		database == "traffic" ||
 		createdb ||
 		harness.tableCount("mbox_traffic_migration_jobs") != 1 {
@@ -687,7 +687,7 @@ func TestTrafficStatisticsMigrateCommandPG14UsesConfiguredDatabaseWithoutCreateD
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14DirectAndDetoured(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationDirectAndDetoured(t *testing.T) {
 	direct := newTrafficMigrationPGHarness(t, "auto")
 	if result := direct.run(t); !result.Completed {
 		t.Fatal("direct migration did not complete")
@@ -703,7 +703,7 @@ func TestTrafficStatisticsMigrateCommandPG14DirectAndDetoured(t *testing.T) {
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14ConcurrentMigrationExclusion(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationConcurrentMigrationExclusion(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	harness.migrateSchema()
 	resolved := harness.resolvedOptions(t)
@@ -762,7 +762,7 @@ func TestTrafficStatisticsMigrateCommandPG14ConcurrentMigrationExclusion(t *test
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14CancellationCleanupAndSecretRedaction(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationCancellationCleanupAndSecretRedaction(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	proxy := newRecordingTrafficMigrationSOCKS(t)
 	harness.writeDetourConfig("auto", proxy.address())
@@ -814,7 +814,7 @@ func TestTrafficStatisticsMigrateCommandPG14CancellationCleanupAndSecretRedactio
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14NoSecretLeakInOutputsAndMetadata(
+func TestTrafficStatisticsMigrateCommandIntegrationNoSecretLeakInOutputsAndMetadata(
 	t *testing.T,
 ) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
@@ -865,7 +865,7 @@ SELECT concat_ws(
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14SchemaAutoAndValidate(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationSchemaAutoAndValidate(t *testing.T) {
 	auto := newTrafficMigrationPGHarness(t, "auto")
 	auto.run(t)
 	validate := newTrafficMigrationPGHarness(t, "validate")
@@ -879,7 +879,7 @@ func TestTrafficStatisticsMigrateCommandPG14SchemaAutoAndValidate(t *testing.T) 
 	}
 }
 
-func TestTrafficStatisticsMigrateCommandPG14MaxUint64(t *testing.T) {
+func TestTrafficStatisticsMigrateCommandIntegrationMaxUint64(t *testing.T) {
 	harness := newTrafficMigrationPGHarness(t, "auto")
 	harness.run(t)
 	var value string

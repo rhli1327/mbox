@@ -10,13 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sagernet/sing-box/log"
-
 	"github.com/gofrs/uuid/v5"
 	"github.com/jackc/pgx/v5"
 )
 
-func TestPostgresSpoolStorePG14ExactOnceUnknownCommit(t *testing.T) {
+func TestPostgresSpoolStorePG18ExactOnceUnknownCommit(t *testing.T) {
 	var serverVersion int
 	if err := testPostgresQueryRow(
 		t,
@@ -25,8 +23,8 @@ func TestPostgresSpoolStorePG14ExactOnceUnknownCommit(t *testing.T) {
 	).Scan(&serverVersion); err != nil {
 		t.Fatal(err)
 	}
-	if serverVersion < 140000 || serverVersion >= 150000 {
-		t.Fatalf("PostgreSQL server version = %d, want 14.x", serverVersion)
+	if serverVersion < 180000 || serverVersion >= 190000 {
+		t.Fatalf("PostgreSQL server version = %d, want 18.x", serverVersion)
 	}
 	schema := newPostgresTestSchema(t)
 	provisionPostgresTestSchema(t, schema)

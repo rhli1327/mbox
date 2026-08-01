@@ -18,7 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestPostgresCommittedQueryPG14ExactBoundary(t *testing.T) {
+func TestPostgresCommittedQueryPG18ExactBoundary(t *testing.T) {
 	var serverVersion int
 	if err := testPostgresQueryRow(
 		t,
@@ -27,8 +27,8 @@ func TestPostgresCommittedQueryPG14ExactBoundary(t *testing.T) {
 	).Scan(&serverVersion); err != nil {
 		t.Fatal(err)
 	}
-	if serverVersion < 140000 || serverVersion >= 150000 {
-		t.Fatalf("PostgreSQL server version = %d, want 14.x", serverVersion)
+	if serverVersion < 180000 || serverVersion >= 190000 {
+		t.Fatalf("PostgreSQL server version = %d, want 18.x", serverVersion)
 	}
 
 	history, store, schema, instanceID := newPostgresCommittedQueryIntegrationHistory(

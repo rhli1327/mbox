@@ -23,26 +23,26 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func TestPostgresBoxPG14StartupRegistersAndQueriesCommittedData(t *testing.T) {
-	schema := newPostgresBoxPG14Schema(t, "p4d_start_")
-	instanceID := newPostgresBoxPG14InstanceID(t)
+func TestPostgresBoxIntegrationStartupRegistersAndQueriesCommittedData(t *testing.T) {
+	schema := newPostgresBoxSchema(t, "p4d_start_")
+	instanceID := newPostgresBoxInstanceID(t)
 	basePath := t.TempDir()
 	config := postgresBoxConfig{
-		DSN:           requirePostgresBoxPG14Environment(t, "MBOX_TEST_POSTGRES_SCHEMA_DSN"),
+		DSN:           requirePostgresBoxEnvironment(t, "MBOX_TEST_POSTGRES_SCHEMA_DSN"),
 		Schema:        schema,
 		StartupPolicy: option.TrafficStatisticsStartupPolicyStrict,
 		InstanceID:    instanceID,
 	}
-	ctx, instance := startPostgresBoxPG14(t, basePath, config)
-	setPostgresBoxPG14Availability(t, schema, instanceID, time.Now().Add(-time.Minute))
+	ctx, instance := startPostgresBox(t, basePath, config)
+	setPostgresBoxAvailability(t, schema, instanceID, time.Now().Add(-time.Minute))
 	if err := instance.Close(); err != nil {
 		t.Fatal("close initial PostgreSQL Box:", err)
 	}
 
-	ctx, instance = startPostgresBoxPG14(t, basePath, config)
-	history := requirePostgresBoxPG14History(t, ctx)
-	history.RecordDelta(postgresBoxPG14Metadata("committed.example"), 23, 47, true)
-	result, err := queryPostgresBoxPG14History(t, history)
+	ctx, instance = startPostgresBox(t, basePath, config)
+	history := requirePostgresBoxHistory(t, ctx)
+	history.RecordDelta(postgresBoxMetadata("committed.example"), 23, 47, true)
+	result, err := queryPostgresBoxHistory(t, history)
 	if err != nil {
 		_ = instance.Close()
 		t.Fatal("query committed PostgreSQL data:", err)
@@ -63,11 +63,11 @@ func TestPostgresBoxPG14StartupRegistersAndQueriesCommittedData(t *testing.T) {
 	}
 }
 
-func TestPostgresBoxPG14UsesConfiguredDatabaseAndSchema(t *testing.T) {
-	schema := newPostgresBoxPG14Schema(t, "p4d_db_")
-	instanceID := newPostgresBoxPG14InstanceID(t)
-	dsn := requirePostgresBoxPG14Environment(t, "MBOX_TEST_POSTGRES_SCHEMA_DSN")
-	_, instance := startPostgresBoxPG14(t, t.TempDir(), postgresBoxConfig{
+func TestPostgresBoxIntegrationUsesConfiguredDatabaseAndSchema(t *testing.T) {
+	schema := newPostgresBoxSchema(t, "p4d_db_")
+	instanceID := newPostgresBoxInstanceID(t)
+	dsn := requirePostgresBoxEnvironment(t, "MBOX_TEST_POSTGRES_SCHEMA_DSN")
+	_, instance := startPostgresBox(t, t.TempDir(), postgresBoxConfig{
 		DSN:           dsn,
 		Schema:        schema,
 		StartupPolicy: option.TrafficStatisticsStartupPolicyStrict,
@@ -87,7 +87,7 @@ func TestPostgresBoxPG14UsesConfiguredDatabaseAndSchema(t *testing.T) {
 		)`,
 		pgx.Identifier{schema}.Sanitize(),
 	)
-	if err := queryPostgresBoxPG14Row(t, dsn, query, instanceID).Scan(
+	if err := queryPostgresBoxRow(t, dsn, query, instanceID).Scan(
 		&database,
 		&registered,
 	); err != nil {
@@ -101,18 +101,18 @@ func TestPostgresBoxPG14UsesConfiguredDatabaseAndSchema(t *testing.T) {
 	}
 }
 
-func TestPostgresBoxPG14RestartDrainsQueuedBatchExactlyOnce(t *testing.T) {
-	schema := newPostgresBoxPG14Schema(t, "p4d_restart_")
-	instanceID := newPostgresBoxPG14InstanceID(t)
+func TestPostgresBoxIntegrationRestartDrainsQueuedBatchExactlyOnce(t *testing.T) {
+	schema := newPostgresBoxSchema(t, "p4d_restart_")
+	instanceID := newPostgresBoxInstanceID(t)
 	basePath := t.TempDir()
 	validConfig := postgresBoxConfig{
-		DSN:           requirePostgresBoxPG14Environment(t, "MBOX_TEST_POSTGRES_SCHEMA_DSN"),
+		DSN:           requirePostgresBoxEnvironment(t, "MBOX_TEST_POSTGRES_SCHEMA_DSN"),
 		Schema:        schema,
 		StartupPolicy: option.TrafficStatisticsStartupPolicyStrict,
 		InstanceID:    instanceID,
 	}
-	_, bootstrap := startPostgresBoxPG14(t, basePath, validConfig)
-	setPostgresBoxPG14Availability(t, schema, instanceID, time.Now().Add(-time.Minute))
+	_, bootstrap := startPostgresBox(t, basePath, validConfig)
+	setPostgresBoxAvailability(t, schema, instanceID, time.Now().Add(-time.Minute))
 	if err := bootstrap.Close(); err != nil {
 		t.Fatal("close PostgreSQL bootstrap Box:", err)
 	}
@@ -120,9 +120,9 @@ func TestPostgresBoxPG14RestartDrainsQueuedBatchExactlyOnce(t *testing.T) {
 	offlineConfig := validConfig
 	offlineConfig.DSN = postgresBoxTestDSN
 	offlineConfig.StartupPolicy = option.TrafficStatisticsStartupPolicyDegraded
-	offlineCtx, offline := startPostgresBoxPG14(t, basePath, offlineConfig)
-	requirePostgresBoxPG14History(t, offlineCtx).RecordDelta(
-		postgresBoxPG14Metadata("restart.example"),
+	offlineCtx, offline := startPostgresBox(t, basePath, offlineConfig)
+	requirePostgresBoxHistory(t, offlineCtx).RecordDelta(
+		postgresBoxMetadata("restart.example"),
 		31,
 		37,
 		true,
@@ -131,9 +131,9 @@ func TestPostgresBoxPG14RestartDrainsQueuedBatchExactlyOnce(t *testing.T) {
 		t.Fatal("close offline PostgreSQL Box:", err)
 	}
 
-	restartCtx, restarted := startPostgresBoxPG14(t, basePath, validConfig)
-	history := requirePostgresBoxPG14History(t, restartCtx)
-	result, err := queryPostgresBoxPG14History(t, history)
+	restartCtx, restarted := startPostgresBox(t, basePath, validConfig)
+	history := requirePostgresBoxHistory(t, restartCtx)
+	result, err := queryPostgresBoxHistory(t, history)
 	if err != nil {
 		_ = restarted.Close()
 		t.Fatal("query drained PostgreSQL data:", err)
@@ -154,14 +154,14 @@ func TestPostgresBoxPG14RestartDrainsQueuedBatchExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestPostgresBoxPG14StartupPoliciesClassifyPermanentFailure(t *testing.T) {
-	validDSN := requirePostgresBoxPG14Environment(t, "MBOX_TEST_POSTGRES_SCHEMA_DSN")
+func TestPostgresBoxIntegrationStartupPoliciesClassifyPermanentFailure(t *testing.T) {
+	validDSN := requirePostgresBoxEnvironment(t, "MBOX_TEST_POSTGRES_SCHEMA_DSN")
 	missingURL, err := url.Parse(validDSN)
 	if err != nil {
 		t.Fatal("parse PostgreSQL test DSN:", err)
 	}
 	missingURL.Path = "/p4d_missing_" + strings.ReplaceAll(
-		newPostgresBoxPG14InstanceID(t),
+		newPostgresBoxInstanceID(t),
 		"-",
 		"",
 	)
@@ -175,7 +175,7 @@ func TestPostgresBoxPG14StartupPoliciesClassifyPermanentFailure(t *testing.T) {
 				DSN:           missingDSN,
 				Schema:        "public",
 				StartupPolicy: option.TrafficStatisticsStartupPolicyStrict,
-				InstanceID:    newPostgresBoxPG14InstanceID(t),
+				InstanceID:    newPostgresBoxInstanceID(t),
 			},
 			nil,
 		)
@@ -189,14 +189,14 @@ func TestPostgresBoxPG14StartupPoliciesClassifyPermanentFailure(t *testing.T) {
 	})
 
 	t.Run("degraded", func(t *testing.T) {
-		ctx, instance := startPostgresBoxPG14(t, t.TempDir(), postgresBoxConfig{
+		ctx, instance := startPostgresBox(t, t.TempDir(), postgresBoxConfig{
 			DSN:           missingDSN,
 			Schema:        "public",
 			StartupPolicy: option.TrafficStatisticsStartupPolicyDegraded,
-			InstanceID:    newPostgresBoxPG14InstanceID(t),
+			InstanceID:    newPostgresBoxInstanceID(t),
 		})
-		history := requirePostgresBoxPG14History(t, ctx)
-		history.RecordDelta(postgresBoxPG14Metadata("permanent.example"), 1, 2, true)
+		history := requirePostgresBoxHistory(t, ctx)
+		history.RecordDelta(postgresBoxMetadata("permanent.example"), 1, 2, true)
 		queryCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_, queryErr := history.Query(queryCtx, trafficcontrol.HistoryQuery{})
 		cancel()
@@ -210,17 +210,17 @@ func TestPostgresBoxPG14StartupPoliciesClassifyPermanentFailure(t *testing.T) {
 	})
 }
 
-func TestPostgresBoxPG14CloseCancelsActiveQuery(t *testing.T) {
-	schema := newPostgresBoxPG14Schema(t, "p4d_cancel_")
-	instanceID := newPostgresBoxPG14InstanceID(t)
-	dsn := requirePostgresBoxPG14Environment(t, "MBOX_TEST_POSTGRES_SCHEMA_DSN")
-	ctx, instance := startPostgresBoxPG14(t, t.TempDir(), postgresBoxConfig{
+func TestPostgresBoxIntegrationCloseCancelsActiveQuery(t *testing.T) {
+	schema := newPostgresBoxSchema(t, "p4d_cancel_")
+	instanceID := newPostgresBoxInstanceID(t)
+	dsn := requirePostgresBoxEnvironment(t, "MBOX_TEST_POSTGRES_SCHEMA_DSN")
+	ctx, instance := startPostgresBox(t, t.TempDir(), postgresBoxConfig{
 		DSN:           dsn,
 		Schema:        schema,
 		StartupPolicy: option.TrafficStatisticsStartupPolicyStrict,
 		InstanceID:    instanceID,
 	})
-	history := requirePostgresBoxPG14History(t, ctx)
+	history := requirePostgresBoxHistory(t, ctx)
 
 	lockConnection, err := pgx.Connect(context.Background(), dsn)
 	if err != nil {
@@ -248,7 +248,7 @@ func TestPostgresBoxPG14CloseCancelsActiveQuery(t *testing.T) {
 		_, queryErr := history.Query(context.Background(), trafficcontrol.HistoryQuery{})
 		queryResult <- queryErr
 	}()
-	waitForPostgresBoxPG14LockWait(t, dsn)
+	waitForPostgresBoxLockWait(t, dsn)
 
 	closeResult := make(chan error, 1)
 	go func() {
@@ -272,7 +272,7 @@ func TestPostgresBoxPG14CloseCancelsActiveQuery(t *testing.T) {
 	}
 }
 
-func startPostgresBoxPG14(
+func startPostgresBox(
 	t *testing.T,
 	basePath string,
 	config postgresBoxConfig,
@@ -288,7 +288,7 @@ func startPostgresBoxPG14(
 	return ctx, instance
 }
 
-func requirePostgresBoxPG14History(
+func requirePostgresBoxHistory(
 	t *testing.T,
 	ctx context.Context,
 ) *trafficcontrol.History {
@@ -300,7 +300,7 @@ func requirePostgresBoxPG14History(
 	return history
 }
 
-func postgresBoxPG14Metadata(domain string) *trafficcontrol.TrackerMetadata {
+func postgresBoxMetadata(domain string) *trafficcontrol.TrackerMetadata {
 	return &trafficcontrol.TrackerMetadata{
 		Metadata: adapter.InboundContext{
 			Network: "tcp",
@@ -311,7 +311,7 @@ func postgresBoxPG14Metadata(domain string) *trafficcontrol.TrackerMetadata {
 	}
 }
 
-func queryPostgresBoxPG14History(
+func queryPostgresBoxHistory(
 	t *testing.T,
 	history *trafficcontrol.History,
 ) (trafficcontrol.HistoryQueryResult, error) {
@@ -323,11 +323,11 @@ func queryPostgresBoxPG14History(
 	})
 }
 
-func newPostgresBoxPG14Schema(t *testing.T, prefix string) string {
+func newPostgresBoxSchema(t *testing.T, prefix string) string {
 	t.Helper()
-	schema := prefix + strings.ReplaceAll(newPostgresBoxPG14InstanceID(t), "-", "")
+	schema := prefix + strings.ReplaceAll(newPostgresBoxInstanceID(t), "-", "")
 	t.Cleanup(func() {
-		dsn := requirePostgresBoxPG14Environment(t, "MBOX_TEST_POSTGRES_ADMIN_DSN")
+		dsn := requirePostgresBoxEnvironment(t, "MBOX_TEST_POSTGRES_ADMIN_DSN")
 		connection, err := pgx.Connect(context.Background(), dsn)
 		if err != nil {
 			t.Errorf("connect PostgreSQL schema cleanup: %v", err)
@@ -344,7 +344,7 @@ func newPostgresBoxPG14Schema(t *testing.T, prefix string) string {
 	return schema
 }
 
-func newPostgresBoxPG14InstanceID(t *testing.T) string {
+func newPostgresBoxInstanceID(t *testing.T) string {
 	t.Helper()
 	value, err := uuid.NewV4()
 	if err != nil {
@@ -353,26 +353,26 @@ func newPostgresBoxPG14InstanceID(t *testing.T) string {
 	return value.String()
 }
 
-func setPostgresBoxPG14Availability(
+func setPostgresBoxAvailability(
 	t *testing.T,
 	schema string,
 	instanceID string,
 	availableFrom time.Time,
 ) {
 	t.Helper()
-	dsn := requirePostgresBoxPG14Environment(t, "MBOX_TEST_POSTGRES_ADMIN_DSN")
+	dsn := requirePostgresBoxEnvironment(t, "MBOX_TEST_POSTGRES_ADMIN_DSN")
 	query := fmt.Sprintf(`
 UPDATE %s.mbox_traffic_instances
 SET target_available_from = $2, destination_available_from = $2
 WHERE instance_id = $1
 `, pgx.Identifier{schema}.Sanitize())
-	commandTag := execPostgresBoxPG14(t, dsn, query, instanceID, availableFrom.UTC())
+	commandTag := execPostgresBox(t, dsn, query, instanceID, availableFrom.UTC())
 	if commandTag.RowsAffected() != 1 {
 		t.Fatalf("updated PostgreSQL instance rows = %d, want 1", commandTag.RowsAffected())
 	}
 }
 
-func waitForPostgresBoxPG14LockWait(t *testing.T, dsn string) {
+func waitForPostgresBoxLockWait(t *testing.T, dsn string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -380,7 +380,7 @@ func waitForPostgresBoxPG14LockWait(t *testing.T, dsn string) {
 	defer ticker.Stop()
 	for {
 		var waiting int
-		err := queryPostgresBoxPG14Row(
+		err := queryPostgresBoxRow(
 			t,
 			dsn,
 			`SELECT count(*) FROM pg_stat_activity
@@ -401,7 +401,7 @@ func waitForPostgresBoxPG14LockWait(t *testing.T, dsn string) {
 	}
 }
 
-func execPostgresBoxPG14(
+func execPostgresBox(
 	t *testing.T,
 	dsn string,
 	query string,
@@ -420,7 +420,7 @@ func execPostgresBoxPG14(
 	return commandTag
 }
 
-func queryPostgresBoxPG14Row(
+func queryPostgresBoxRow(
 	t *testing.T,
 	dsn string,
 	query string,
@@ -439,7 +439,7 @@ func queryPostgresBoxPG14Row(
 	return connection.QueryRow(context.Background(), query, arguments...)
 }
 
-func requirePostgresBoxPG14Environment(t *testing.T, name string) string {
+func requirePostgresBoxEnvironment(t *testing.T, name string) string {
 	t.Helper()
 	value := os.Getenv(name)
 	if value == "" {

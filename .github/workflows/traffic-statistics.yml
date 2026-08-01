@@ -155,7 +155,7 @@ jobs:
             test/go.sum
 
   postgres-integration:
-    name: PostgreSQL 14 integration
+    name: PostgreSQL 18 integration
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
@@ -218,16 +218,16 @@ jobs:
             -extfile "$cert_dir/server.cnf"
           echo "POSTGRES_CERT_DIR=${cert_dir}" >> "$GITHUB_ENV"
 
-      - name: Start pinned PostgreSQL 14
+      - name: Start pinned PostgreSQL 18
         run: |
           set -euo pipefail
           docker run -d \
             --name "$POSTGRES_CONTAINER" \
-            --tmpfs /var/lib/postgresql/data \
+            --tmpfs /var/lib/postgresql \
             -e "POSTGRES_PASSWORD=${POSTGRES_ADMIN_PASSWORD}" \
             -e "POSTGRES_DB=${POSTGRES_DATABASE}" \
             -p "127.0.0.1:${POSTGRES_PORT}:5432" \
-            postgres@sha256:9062043625415b4628f0ca44c2c65de93778afb7b1db33aff67877cace3b966f
+            postgres@sha256:3a82e1f56c8f0f5616a11103ac3d47e632c3938698946a7ad26da0df1334744a
           ready=false
           for attempt in $(seq 1 60); do
             if docker exec "$POSTGRES_CONTAINER" \
@@ -306,7 +306,7 @@ jobs:
             -count=1 \
             -timeout=10m \
             -tags with_postgres \
-            -run '^TestPostgresBoxPG14' \
+            -run '^TestPostgresBoxIntegration' \
             .
           env GOWORK=off GOTOOLCHAIN=local go test \
             -mod=readonly \
@@ -326,14 +326,14 @@ jobs:
             -count=1 \
             -timeout=20m \
             -tags with_postgres \
-            -run '^TestTrafficStatisticsMigrateCommandPG14' \
+            -run '^TestTrafficStatisticsMigrateCommandIntegration' \
             ./cmd/sing-box
           env GOWORK=off GOTOOLCHAIN=local go test \
             -mod=readonly \
             -count=1 \
             -timeout=20m \
             -tags 'with_postgres,with_quic' \
-            -run '^TestTrafficStatisticsMigrateCommandPG14Hysteria2Detour$' \
+            -run '^TestTrafficStatisticsMigrateCommandIntegrationHysteria2Detour$' \
             ./cmd/sing-box
 
       - name: Stop PostgreSQL
