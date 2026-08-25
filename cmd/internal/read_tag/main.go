@@ -10,13 +10,15 @@ import (
 )
 
 var (
-	flagRunInCI    bool
-	flagRunNightly bool
+	flagRunInCI             bool
+	flagRunNightly          bool
+	flagHighestReachableRev string
 )
 
 func init() {
 	flag.BoolVar(&flagRunInCI, "ci", false, "Run in CI")
 	flag.BoolVar(&flagRunNightly, "nightly", false, "Run nightly")
+	flag.StringVar(&flagHighestReachableRev, "highest-reachable", "", "Read the highest semantic version reachable from a Git revision")
 }
 
 func main() {
@@ -25,7 +27,9 @@ func main() {
 		versionStr string
 		err        error
 	)
-	if flagRunNightly {
+	if flagHighestReachableRev != "" {
+		versionStr, err = build_shared.ReadHighestReachableVersion(flagHighestReachableRev)
+	} else if flagRunNightly {
 		var version badversion.Version
 		version, err = build_shared.ReadTagVersion()
 		if err == nil {
