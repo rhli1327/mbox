@@ -32,8 +32,14 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/enfein/mbox.git
           git fetch --no-tags upstream mieru
+          git fetch --no-tags upstream '+refs/tags/*:refs/upstream-tags/enfein/*'
 
           upstream_mieru=upstream/mieru
+          upstream_tag="$(git for-each-ref --points-at "$upstream_mieru" --sort=-version:refname --format='%(refname:strip=3)' refs/upstream-tags/enfein | head -n1)"
+          if [[ ! "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "::error::Unable to determine the upstream mbox version."
+            exit 1
+          fi
           local_mieru_commit="$(git log origin/mieru --format=%H --grep='^feat: add mieru protocol$' -1)"
           if [[ -z "$local_mieru_commit" ]]; then
             echo "::error::Unable to find the local mieru integration commit."
@@ -50,6 +56,11 @@ jobs:
           upstream_base="$(git rev-parse "${upstream_mieru}^")"
           git checkout -B sync-upstream-mieru
           git merge --no-edit "$upstream_base"
+          printf '%s\n' "${upstream_tag#v}" > release/BASE_VERSION
+          if ! git diff --quiet -- release/BASE_VERSION; then
+            git add release/BASE_VERSION
+            git commit -m "release: track upstream ${upstream_tag#v}"
+          fi
           if git diff --quiet origin/mieru...HEAD; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
