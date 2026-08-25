@@ -13,21 +13,47 @@ import (
 )
 
 func (t *Transport) exchangeWithTransports(ctx context.Context, message *mDNS.Msg, serverTransports []adapter.DNSTransport, callback func(response *mDNS.Msg, err error)) {
-	question := message.Question[0]
-	domain := dns.FqdnToDomain(question.Name)
+	originalQuestion := message.Question[0]
+	domain := dns.FqdnToDomain(originalQuestion.Name)
 	names := t.nameList(domain)
 	if len(names) == 0 {
-		callback(nil, E.New("invalid domain: ", domain))
+		callback(nil, E.New("dhcp: invalid domain: ", domain))
 		return
 	}
+	var nameErrorResponse *mDNS.Msg
 	nameExchangers := make([]transport.AsyncExchanger, 0, len(names))
 	for _, fqdn := range names {
-		nameExchangers = append(nameExchangers, t.newNameExchanger(message, fqdn, serverTransports))
+		nameExchanger := t.newNameExchanger(message, fqdn, serverTransports)
+		nameExchangers = append(nameExchangers, func(ctx context.Context, callback func(response *mDNS.Msg, err error)) {
+			nameExchanger(ctx, func(response *mDNS.Msg, err error) {
+				if err == nil {
+					restoreOriginalQuestion(response, fqdn, originalQuestion)
+					if response.Rcode == mDNS.RcodeNameError && (nameErrorResponse == nil || fqdn == originalQuestion.Name) {
+						nameErrorResponse = response
+					}
+				}
+				callback(response, err)
+			})
+		})
 	}
-	if len(serverTransports) == 1 || !(question.Qtype == mDNS.TypeA || question.Qtype == mDNS.TypeAAAA) {
-		transport.ExchangeSequential(ctx, nameExchangers, nil, callback)
-	} else {
-		transport.ExchangeRace(ctx, nameExchangers, callback)
+	transport.ExchangeSequential(ctx, nameExchangers, func(response *mDNS.Msg, err error) bool {
+		return err == nil && response.Rcode != mDNS.RcodeNameError
+	}, func(response *mDNS.Msg, err error) {
+		if nameErrorResponse != nil && (err != nil || response == nil || response.Rcode == mDNS.RcodeNameError) {
+			callback(nameErrorResponse, nil)
+			return
+		}
+		callback(response, err)
+	})
+}
+
+// Stub resolvers discard Answer RRs whose owner name does not match the question.
+func restoreOriginalQuestion(response *mDNS.Msg, fqdn string, question mDNS.Question) {
+	response.Question = []mDNS.Question{question}
+	for _, record := range response.Answer {
+		if strings.EqualFold(record.Header().Name, fqdn) {
+			record.Header().Name = question.Name
+		}
 	}
 }
 

@@ -101,8 +101,11 @@ type Endpoint struct {
 	sshReconfigHook   wgengine.ReconfigListener
 
 	cfg           *wgcfg.Config
+	routerCfg     *router.Config
 	dnsCfg        *tsDNS.Config
 	routeDomains  common.TypedValue[map[string]bool]
+	routeSuffixes common.TypedValue[[]string]
+	searchDomains atomic.Bool
 	routePrefixes atomic.Pointer[netipx.IPSet]
 
 	acceptRoutes               bool
@@ -195,7 +198,7 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 	dialerQueryOptions := outboundDialer.(dialer.ResolveDialer).QueryOptions()
 	dnsRouter := service.FromContext[adapter.DNSRouter](ctx)
 	return &Endpoint{
-		Adapter:           endpoint.NewAdapter(C.TypeTailscale, tag, []string{N.NetworkTCP, N.NetworkUDP, N.NetworkICMP}, nil),
+		Adapter:           endpoint.NewAdapterWithDialerOptions(C.TypeTailscale, tag, []string{N.NetworkTCP, N.NetworkUDP, N.NetworkICMP}, options.DialerOptions),
 		ctx:               ctx,
 		router:            router,
 		logger:            logger,
@@ -900,7 +903,16 @@ func (t *Endpoint) PreferredDomain(metadata *adapter.InboundContext, domain stri
 	if routeDomains == nil {
 		return false
 	}
-	return routeDomains[strings.ToLower(domain)]
+	domain = strings.ToLower(domain)
+	if routeDomains[domain] {
+		return true
+	}
+	for _, suffix := range t.routeSuffixes.Load() {
+		if mDNS.IsSubDomain(suffix, domain) {
+			return true
+		}
+	}
+	return !strings.Contains(domain, ".") && t.searchDomains.Load()
 }
 
 func (t *Endpoint) PreferredAddress(metadata *adapter.InboundContext, address netip.Addr) bool {
@@ -919,24 +931,36 @@ func (t *Endpoint) onReconfig(cfg *wgcfg.Config, routerCfg *router.Config, dnsCf
 	if cfg == nil || dnsCfg == nil {
 		return
 	}
-	if (t.cfg != nil && reflect.DeepEqual(t.cfg, cfg)) && (t.dnsCfg != nil && reflect.DeepEqual(t.dnsCfg, dnsCfg)) {
+	if t.cfg != nil && reflect.DeepEqual(t.cfg, cfg) &&
+		t.routerCfg != nil && reflect.DeepEqual(t.routerCfg, routerCfg) &&
+		t.dnsCfg != nil && reflect.DeepEqual(t.dnsCfg, dnsCfg) {
 		return
 	}
 	t.cfg = cfg
+	t.routerCfg = routerCfg
 	t.dnsCfg = dnsCfg
 
 	routeDomains := make(map[string]bool)
-	for fqdn := range dnsCfg.Routes {
+	for fqdn := range dnsCfg.Hosts {
 		routeDomains[fqdn.WithoutTrailingDot()] = true
 	}
 	for _, fqdn := range dnsCfg.SearchDomains {
 		routeDomains[fqdn.WithoutTrailingDot()] = true
 	}
+	routeSuffixes := make([]string, 0, len(dnsCfg.Routes))
+	for fqdn := range dnsCfg.Routes {
+		routeSuffixes = append(routeSuffixes, fqdn.WithoutTrailingDot())
+	}
 	t.routeDomains.Store(routeDomains)
+	t.routeSuffixes.Store(routeSuffixes)
+	t.searchDomains.Store(len(dnsCfg.SearchDomains) > 0)
 
 	var builder netipx.IPSetBuilder
 	for _, peer := range cfg.Peers {
 		for _, allowedIP := range peer.AllowedIPs {
+			if allowedIP.Bits() == 0 {
+				continue
+			}
 			builder.AddPrefix(allowedIP)
 		}
 	}

@@ -80,7 +80,7 @@ jobs:
       - name: Calculate version
         if: github.event_name != 'workflow_dispatch'
         run: |-
-          base_version=$(go run ./cmd/internal/read_tag --highest-reachable HEAD)
+          base_version=$(cat release/BASE_VERSION)
           echo "version=${base_version}+mbox.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
       - name: Set outputs
         id: outputs

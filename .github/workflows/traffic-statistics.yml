@@ -370,8 +370,7 @@ jobs:
       - name: Resolve version
         run: |
           set -xeuo pipefail
-          git fetch origin mieru --tags --force
-          base_version="$(go run ./cmd/internal/read_tag --highest-reachable HEAD)"
+          base_version="$(cat release/BASE_VERSION)"
           traffic_version="${base_version}+traffic.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::7}"
           echo "TRAFFIC_VERSION=${traffic_version}" >> "$GITHUB_ENV"
 
