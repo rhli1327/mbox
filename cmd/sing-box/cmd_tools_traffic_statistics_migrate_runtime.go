@@ -370,6 +370,7 @@ func (r *trafficStatisticsMigrationRuntime) Start() error {
 	}
 	if r.certificateStore != nil {
 		if err := adapter.StartNamed(
+			r.ctx,
 			r.logger,
 			adapter.StartStateInitialize,
 			[]adapter.LifecycleService{r.certificateStore},
@@ -378,6 +379,7 @@ func (r *trafficStatisticsMigrationRuntime) Start() error {
 		}
 	}
 	if err := adapter.StartNamed(
+		r.ctx,
 		r.logger,
 		adapter.StartStateInitialize,
 		[]adapter.LifecycleService{r.networkNamespace},
@@ -385,6 +387,7 @@ func (r *trafficStatisticsMigrationRuntime) Start() error {
 		return err
 	}
 	if err := adapter.Start(
+		r.ctx,
 		r.logger,
 		adapter.StartStateInitialize,
 		r.network,
@@ -400,6 +403,7 @@ func (r *trafficStatisticsMigrationRuntime) Start() error {
 	}
 	if r.certificateStore != nil {
 		if err := adapter.StartNamed(
+			r.ctx,
 			r.logger,
 			adapter.StartStateStart,
 			[]adapter.LifecycleService{r.certificateStore},
@@ -408,6 +412,7 @@ func (r *trafficStatisticsMigrationRuntime) Start() error {
 		}
 	}
 	if err := adapter.Start(
+		r.ctx,
 		r.logger,
 		adapter.StartStateStart,
 		r.outbound,
@@ -419,6 +424,7 @@ func (r *trafficStatisticsMigrationRuntime) Start() error {
 	}
 	if r.httpClient != nil {
 		if err := adapter.StartNamed(
+			r.ctx,
 			r.logger,
 			adapter.StartStateStart,
 			[]adapter.LifecycleService{r.httpClient},
@@ -427,6 +433,7 @@ func (r *trafficStatisticsMigrationRuntime) Start() error {
 		}
 	}
 	if err := adapter.Start(
+		r.ctx,
 		r.logger,
 		adapter.StartStateStart,
 		r.router,
@@ -437,6 +444,7 @@ func (r *trafficStatisticsMigrationRuntime) Start() error {
 		return err
 	}
 	if err := adapter.Start(
+		r.ctx,
 		r.logger,
 		adapter.StartStatePostStart,
 		r.outbound,
@@ -451,6 +459,7 @@ func (r *trafficStatisticsMigrationRuntime) Start() error {
 		return err
 	}
 	if err := adapter.Start(
+		r.ctx,
 		r.logger,
 		adapter.StartStateStarted,
 		r.network,

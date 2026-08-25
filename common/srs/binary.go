@@ -2,13 +2,10 @@ package srs
 
 import (
 	"bufio"
-	"bytes"
 	"compress/zlib"
 	"encoding/binary"
 	"io"
-	"math/bits"
 	"net/netip"
-	"slices"
 	"unsafe"
 
 	C "github.com/sagernet/sing-box/constant"
@@ -171,7 +168,7 @@ func readDefaultRule(reader varbin.Reader, recover bool) (rule option.DefaultHea
 		switch itemType {
 		case ruleItemQueryType:
 			var rawQueryType []uint16
-			rawQueryType, err = readSlice[uint16](reader, binary.BigEndian)
+			rawQueryType, err = varbin.ReadSlice[uint16](reader, binary.BigEndian)
 			if err != nil {
 				return
 			}
@@ -182,7 +179,7 @@ func readDefaultRule(reader varbin.Reader, recover bool) (rule option.DefaultHea
 			rule.Network, err = readRuleItemString(reader)
 		case ruleItemDomain:
 			var matcher *domain.Matcher
-			matcher, err = readDomainMatcher(reader)
+			matcher, err = domain.ReadMatcher(reader)
 			if err != nil {
 				return
 			}
@@ -211,11 +208,11 @@ func readDefaultRule(reader varbin.Reader, recover bool) (rule option.DefaultHea
 				rule.IPCIDR = common.Map(rule.IPSet.Prefixes(), netip.Prefix.String)
 			}
 		case ruleItemSourcePort:
-			rule.SourcePort, err = readSlice[uint16](reader, binary.BigEndian)
+			rule.SourcePort, err = varbin.ReadSlice[uint16](reader, binary.BigEndian)
 		case ruleItemSourcePortRange:
 			rule.SourcePortRange, err = readRuleItemString(reader)
 		case ruleItemPort:
-			rule.Port, err = readSlice[uint16](reader, binary.BigEndian)
+			rule.Port, err = varbin.ReadSlice[uint16](reader, binary.BigEndian)
 		case ruleItemPortRange:
 			rule.PortRange, err = readRuleItemString(reader)
 		case ruleItemProcessName:
@@ -234,7 +231,7 @@ func readDefaultRule(reader varbin.Reader, recover bool) (rule option.DefaultHea
 			rule.WIFIBSSID, err = readRuleItemString(reader)
 		case ruleItemAdGuardDomain:
 			var matcher *domain.AdGuardMatcher
-			matcher, err = readAdGuardMatcher(reader)
+			matcher, err = domain.ReadAdGuardMatcher(reader)
 			if err != nil {
 				return
 			}
@@ -243,7 +240,7 @@ func readDefaultRule(reader varbin.Reader, recover bool) (rule option.DefaultHea
 				rule.AdGuardDomain = matcher.Dump()
 			}
 		case ruleItemNetworkType:
-			rule.NetworkType, err = readSlice[option.InterfaceType](reader, binary.BigEndian)
+			rule.NetworkType, err = varbin.ReadSlice[option.InterfaceType](reader, binary.BigEndian)
 		case ruleItemNetworkIsExpensive:
 			rule.NetworkIsExpensive = true
 		case ruleItemNetworkIsConstrained:
@@ -535,131 +532,13 @@ func readRuleItemString(reader varbin.Reader) ([]string, error) {
 	var result []string
 	for range length {
 		var value []byte
-		value, err = readSlice[byte](reader, binary.BigEndian)
+		value, err = varbin.ReadSlice[byte](reader, binary.BigEndian)
 		if err != nil {
 			return nil, err
 		}
 		result = append(result, string(value))
 	}
 	return result, nil
-}
-
-type baseData interface {
-	~bool | ~int8 | ~uint8 | ~int16 | ~uint16 | ~int32 | ~uint32 | ~int64 | ~uint64 | ~float32 | ~float64
-}
-
-func readSlice[T baseData](reader varbin.Reader, order binary.ByteOrder) ([]T, error) {
-	count, err := binary.ReadUvarint(reader)
-	if err != nil {
-		return nil, err
-	}
-	var result []T
-	for uint64(len(result)) < count {
-		result = slices.Grow(result, 1)
-		chunkCount := min(count-uint64(len(result)), uint64(cap(result)-len(result)))
-		start := len(result)
-		result = result[:uint64(start)+chunkCount]
-		err = binary.Read(reader, order, result[start:])
-		if err != nil {
-			return nil, err
-		}
-	}
-	return result, nil
-}
-
-func readDomainMatcher(reader varbin.Reader) (*domain.Matcher, error) {
-	safeReader, err := replaySuccinctSet(reader)
-	if err != nil {
-		return nil, err
-	}
-	return domain.ReadMatcher(safeReader)
-}
-
-func readAdGuardMatcher(reader varbin.Reader) (*domain.AdGuardMatcher, error) {
-	safeReader, err := replaySuccinctSet(reader)
-	if err != nil {
-		return nil, err
-	}
-	return domain.ReadAdGuardMatcher(safeReader)
-}
-
-// replaySuccinctSet validates the length-prefixed domain matcher before passing
-// it to the older 1.14 dependency, whose reader allocates declared sizes at once.
-func replaySuccinctSet(reader varbin.Reader) (varbin.Reader, error) {
-	version, err := reader.ReadByte()
-	if err != nil {
-		return nil, err
-	}
-	leaves, err := readSlice[uint64](reader, binary.BigEndian)
-	if err != nil {
-		return nil, err
-	}
-	labelBitmap, err := readSlice[uint64](reader, binary.BigEndian)
-	if err != nil {
-		return nil, err
-	}
-	labels, err := readSlice[byte](reader, binary.BigEndian)
-	if err != nil {
-		return nil, err
-	}
-	onesCount := 0
-	lastOneIndex := -1
-	for wordIndex, word := range labelBitmap {
-		onesCount += bits.OnesCount64(word)
-		if word != 0 {
-			lastOneIndex = wordIndex<<6 | (63 - bits.LeadingZeros64(word))
-		}
-	}
-	zerosCount := lastOneIndex + 1 - onesCount
-	if onesCount != zerosCount+1 || len(labels) != zerosCount {
-		return nil, E.New("domain: malformed succinct set")
-	}
-	const maxDomainMatcherDepth = 1024
-	nodeDepths := []uint16{0}
-	for nodeIndex, bitmapIndex := 0, 0; bitmapIndex <= lastOneIndex; nodeIndex++ {
-		if nodeIndex >= len(nodeDepths) {
-			return nil, E.New("domain: malformed succinct set")
-		}
-		depth := nodeDepths[nodeIndex]
-		for bitmapIndex <= lastOneIndex && labelBitmap[bitmapIndex>>6]&(1<<uint(bitmapIndex&63)) == 0 {
-			if depth >= maxDomainMatcherDepth {
-				return nil, E.New("domain: matcher nested too deep")
-			}
-			nodeDepths = append(nodeDepths, depth+1)
-			bitmapIndex++
-		}
-		if bitmapIndex > lastOneIndex {
-			return nil, E.New("domain: malformed succinct set")
-		}
-		bitmapIndex++
-	}
-	if len(nodeDepths) != onesCount {
-		return nil, E.New("domain: malformed succinct set")
-	}
-	leavesWordCount := (onesCount + 63) >> 6
-	if len(leaves) < leavesWordCount {
-		leaves = append(leaves, make([]uint64, leavesWordCount-len(leaves))...)
-	}
-	var buffer bytes.Buffer
-	buffer.WriteByte(version)
-	for _, value := range []any{leaves, labelBitmap, labels} {
-		var length int
-		switch typedValue := value.(type) {
-		case []uint64:
-			length = len(typedValue)
-		case []byte:
-			length = len(typedValue)
-		}
-		_, err = varbin.WriteUvarint(&buffer, uint64(length))
-		if err != nil {
-			return nil, err
-		}
-		err = binary.Write(&buffer, binary.BigEndian, value)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return &buffer, nil
 }
 
 func writeRuleItemString(writer varbin.Writer, itemType uint8, value []string) error {

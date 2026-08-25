@@ -44,6 +44,7 @@ import (
 var _ adapter.SimpleLifecycle = (*Box)(nil)
 
 type Box struct {
+	ctx                      context.Context
 	createdAt                time.Time
 	debugOptions             option.DebugOptions
 	debugHTTPServer          *http.Server
@@ -171,9 +172,7 @@ func New(options Options) (*Box, error) {
 		needV2RayAPI = true
 	}
 	if experimentalOptions.TrafficStatistics != nil && experimentalOptions.TrafficStatistics.Enabled {
-		resolvedTrafficStatistics, err = option.ResolveTrafficStatisticsOptions(
-			experimentalOptions.TrafficStatistics,
-		)
+		resolvedTrafficStatistics, err = option.ResolveTrafficStatisticsOptions(experimentalOptions.TrafficStatistics)
 		if err != nil {
 			return nil, E.Cause(err, "validate traffic statistics options")
 		}
@@ -268,8 +267,7 @@ func New(options Options) (*Box, error) {
 		}
 	}()
 	if needTrafficStatistics {
-		if resolvedTrafficStatistics.StorageType ==
-			option.TrafficStatisticsStorageTypePostgres {
+		if resolvedTrafficStatistics.StorageType == option.TrafficStatisticsStorageTypePostgres {
 			trafficHistory, err = trafficcontrol.NewPostgresHistory(
 				ctx,
 				logFactory.NewLogger("traffic-statistics"),
@@ -277,21 +275,12 @@ func New(options Options) (*Box, error) {
 				resolvedTrafficStatistics,
 			)
 			if err != nil {
-				return nil, E.Cause(
-					err,
-					"create PostgreSQL traffic statistics history",
-				)
+				return nil, E.Cause(err, "create PostgreSQL traffic statistics history")
 			}
 		} else {
-			configContent, marshalErr := marshalTrafficStatisticsConfig(
-				ctx,
-				options.Options,
-			)
+			configContent, marshalErr := marshalTrafficStatisticsConfig(ctx, options.Options)
 			if marshalErr != nil {
-				return nil, E.Cause(
-					marshalErr,
-					"calculate traffic statistics config revision",
-				)
+				return nil, E.Cause(marshalErr, "calculate traffic statistics config revision")
 			}
 			trafficHistory = trafficcontrol.NewHistory(
 				ctx,
@@ -537,6 +526,7 @@ func New(options Options) (*Box, error) {
 		internalServices = append(internalServices, adapter.NewLifecycleService(ntpService, "ntp service"))
 	}
 	result := &Box{
+		ctx:                      ctx,
 		network:                  networkManager,
 		endpoint:                 endpointManager,
 		inbound:                  inboundManager,
@@ -569,8 +559,7 @@ func appendTrafficHistoryService(
 	if trafficHistory == nil {
 		return internalServices, outboundDependentServices
 	}
-	if traffic.StorageType == option.TrafficStatisticsStorageTypePostgres &&
-		traffic.Dialer.Detour != "" {
+	if traffic.StorageType == option.TrafficStatisticsStorageTypePostgres && traffic.Dialer.Detour != "" {
 		return internalServices, append(outboundDependentServices, trafficHistory)
 	}
 	return append(internalServices, trafficHistory), outboundDependentServices
@@ -627,27 +616,27 @@ func (s *Box) preStart() error {
 	if err != nil {
 		return err
 	}
-	err = adapter.StartNamed(s.logger, adapter.StartStateInitialize, s.internalService) // cache-file clash-api v2ray-api
+	err = adapter.StartNamed(s.ctx, s.logger, adapter.StartStateInitialize, s.internalService) // cache-file clash-api v2ray-api
 	if err != nil {
 		return err
 	}
-	err = adapter.StartNamed(s.logger, adapter.StartStateInitialize, s.outboundDependentService)
+	err = adapter.StartNamed(s.ctx, s.logger, adapter.StartStateInitialize, s.outboundDependentService)
 	if err != nil {
 		return err
 	}
-	err = adapter.Start(s.logger, adapter.StartStateInitialize, s.network, s.dnsTransport, s.dnsRouter, s.connection, s.router, s.outbound, s.inbound, s.endpoint, s.service, s.certificateProvider)
+	err = adapter.Start(s.ctx, s.logger, adapter.StartStateInitialize, s.network, s.dnsTransport, s.dnsRouter, s.connection, s.router, s.outbound, s.inbound, s.endpoint, s.service, s.certificateProvider)
 	if err != nil {
 		return err
 	}
-	err = adapter.Start(s.logger, adapter.StartStateStart, s.outbound, s.dnsTransport, s.network, s.connection)
+	err = adapter.Start(s.ctx, s.logger, adapter.StartStateStart, s.outbound, s.dnsTransport, s.network, s.connection)
 	if err != nil {
 		return err
 	}
-	err = adapter.StartNamed(s.logger, adapter.StartStateStart, []adapter.LifecycleService{s.httpClientService})
+	err = adapter.StartNamed(s.ctx, s.logger, adapter.StartStateStart, []adapter.LifecycleService{s.httpClientService})
 	if err != nil {
 		return err
 	}
-	err = adapter.Start(s.logger, adapter.StartStateStart, s.router, s.dnsRouter)
+	err = adapter.Start(s.ctx, s.logger, adapter.StartStateStart, s.router, s.dnsRouter)
 	if err != nil {
 		return err
 	}
@@ -659,47 +648,47 @@ func (s *Box) start() error {
 	if err != nil {
 		return err
 	}
-	err = adapter.StartNamed(s.logger, adapter.StartStateStart, s.internalService)
+	err = adapter.StartNamed(s.ctx, s.logger, adapter.StartStateStart, s.internalService)
 	if err != nil {
 		return err
 	}
-	err = adapter.StartNamed(s.logger, adapter.StartStateStart, s.outboundDependentService)
+	err = adapter.StartNamed(s.ctx, s.logger, adapter.StartStateStart, s.outboundDependentService)
 	if err != nil {
 		return err
 	}
-	err = adapter.Start(s.logger, adapter.StartStateStart, s.endpoint)
+	err = adapter.Start(s.ctx, s.logger, adapter.StartStateStart, s.endpoint)
 	if err != nil {
 		return err
 	}
-	err = adapter.Start(s.logger, adapter.StartStateStart, s.certificateProvider)
+	err = adapter.Start(s.ctx, s.logger, adapter.StartStateStart, s.certificateProvider)
 	if err != nil {
 		return err
 	}
-	err = adapter.Start(s.logger, adapter.StartStateStart, s.inbound, s.service)
+	err = adapter.Start(s.ctx, s.logger, adapter.StartStateStart, s.inbound, s.service)
 	if err != nil {
 		return err
 	}
-	err = adapter.Start(s.logger, adapter.StartStatePostStart, s.outbound, s.network, s.dnsTransport, s.dnsRouter, s.connection, s.router, s.endpoint, s.certificateProvider, s.inbound, s.service)
+	err = adapter.Start(s.ctx, s.logger, adapter.StartStatePostStart, s.outbound, s.network, s.dnsTransport, s.dnsRouter, s.connection, s.router, s.endpoint, s.certificateProvider, s.inbound, s.service)
 	if err != nil {
 		return err
 	}
-	err = adapter.StartNamed(s.logger, adapter.StartStatePostStart, s.internalService)
+	err = adapter.StartNamed(s.ctx, s.logger, adapter.StartStatePostStart, s.internalService)
 	if err != nil {
 		return err
 	}
-	err = adapter.StartNamed(s.logger, adapter.StartStatePostStart, s.outboundDependentService)
+	err = adapter.StartNamed(s.ctx, s.logger, adapter.StartStatePostStart, s.outboundDependentService)
 	if err != nil {
 		return err
 	}
-	err = adapter.Start(s.logger, adapter.StartStateStarted, s.network, s.dnsTransport, s.dnsRouter, s.connection, s.router, s.outbound, s.endpoint, s.certificateProvider, s.inbound, s.service)
+	err = adapter.Start(s.ctx, s.logger, adapter.StartStateStarted, s.network, s.dnsTransport, s.dnsRouter, s.connection, s.router, s.outbound, s.endpoint, s.certificateProvider, s.inbound, s.service)
 	if err != nil {
 		return err
 	}
-	err = adapter.StartNamed(s.logger, adapter.StartStateStarted, s.internalService)
+	err = adapter.StartNamed(s.ctx, s.logger, adapter.StartStateStarted, s.internalService)
 	if err != nil {
 		return err
 	}
-	err = adapter.StartNamed(s.logger, adapter.StartStateStarted, s.outboundDependentService)
+	err = adapter.StartNamed(s.ctx, s.logger, adapter.StartStateStarted, s.outboundDependentService)
 	if err != nil {
 		return err
 	}
@@ -735,6 +724,14 @@ func (s *Box) Close() error {
 		})
 		done()
 	}
+	if s.httpClientService != nil {
+		s.logger.Trace("close ", s.httpClientService.Name())
+		startTime := time.Now()
+		err = E.Append(err, s.httpClientService.Close(), func(err error) error {
+			return E.Cause(err, "close ", s.httpClientService.Name())
+		})
+		s.logger.Trace("close ", s.httpClientService.Name(), " completed (", F.Seconds(time.Since(startTime).Seconds()), "s)")
+	}
 	for _, lifecycleService := range s.internalService {
 		done := adapter.LogElapsed(s.logger, "close ", lifecycleService.Name())
 		err = E.Append(err, lifecycleService.Close(), func(err error) error {
@@ -748,14 +745,6 @@ func (s *Box) Close() error {
 			return E.Cause(err, "close ", lifecycleService.Name())
 		})
 		done()
-	}
-	if s.httpClientService != nil {
-		s.logger.Trace("close ", s.httpClientService.Name())
-		startTime := time.Now()
-		err = E.Append(err, s.httpClientService.Close(), func(err error) error {
-			return E.Cause(err, "close ", s.httpClientService.Name())
-		})
-		s.logger.Trace("close ", s.httpClientService.Name(), " completed (", F.Seconds(time.Since(startTime).Seconds()), "s)")
 	}
 	for _, closeItem := range []struct {
 		name    string

@@ -13,8 +13,8 @@ func TestHighestVersionTag(t *testing.T) {
 		"traffic-statistics-latest",
 		"v1.14.0-alpha.50",
 		"v1.14.0-beta.2",
-		"v1.14.0-beta.2+mbox.100",
-		"v1.14.0-beta.2-mbox.99",
+		"v1.14.0-rc.1+mbox.100",
+		"v1.14.0-rc.1-mbox.99",
 	}))
 	require.Equal(t, "v1.14.0", highestVersionTag([]string{
 		"v1.14.0-beta.2",
@@ -24,6 +24,6 @@ func TestHighestVersionTag(t *testing.T) {
 	require.Empty(t, highestVersionTag([]string{
 		"traffic-statistics-latest",
 		"latest",
-		"v1.14.0-beta.2+mbox.100",
+		"v1.14.0-rc.1+mbox.100",
 	}))
 }

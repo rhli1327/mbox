@@ -12,49 +12,17 @@ import (
 	mDNS "github.com/miekg/dns"
 )
 
-func (t *Transport) exchangeWithTransports(ctx context.Context, message *mDNS.Msg, serverTransports []adapter.DNSTransport, callback func(response *mDNS.Msg, err error)) {
-	originalQuestion := message.Question[0]
-	domain := dns.FqdnToDomain(originalQuestion.Name)
-	names := t.nameList(domain)
+func (t *Transport) exchangeWithTransports(ctx context.Context, message *mDNS.Msg, state *transportState, callback func(response *mDNS.Msg, err error)) {
+	question := message.Question[0]
+	domain := dns.FqdnToDomain(question.Name)
+	names := t.nameList(state.search, domain)
 	if len(names) == 0 {
-		callback(nil, E.New("dhcp: invalid domain: ", domain))
+		callback(nil, E.New("invalid domain: ", domain))
 		return
 	}
-	var nameErrorResponse *mDNS.Msg
-	nameExchangers := make([]transport.AsyncExchanger, 0, len(names))
-	for _, fqdn := range names {
-		nameExchanger := t.newNameExchanger(message, fqdn, serverTransports)
-		nameExchangers = append(nameExchangers, func(ctx context.Context, callback func(response *mDNS.Msg, err error)) {
-			nameExchanger(ctx, func(response *mDNS.Msg, err error) {
-				if err == nil {
-					restoreOriginalQuestion(response, fqdn, originalQuestion)
-					if response.Rcode == mDNS.RcodeNameError && (nameErrorResponse == nil || fqdn == originalQuestion.Name) {
-						nameErrorResponse = response
-					}
-				}
-				callback(response, err)
-			})
-		})
-	}
-	transport.ExchangeSequential(ctx, nameExchangers, func(response *mDNS.Msg, err error) bool {
-		return err == nil && response.Rcode != mDNS.RcodeNameError
-	}, func(response *mDNS.Msg, err error) {
-		if nameErrorResponse != nil && (err != nil || response == nil || response.Rcode == mDNS.RcodeNameError) {
-			callback(nameErrorResponse, nil)
-			return
-		}
-		callback(response, err)
-	})
-}
-
-// Stub resolvers discard Answer RRs whose owner name does not match the question.
-func restoreOriginalQuestion(response *mDNS.Msg, fqdn string, question mDNS.Question) {
-	response.Question = []mDNS.Question{question}
-	for _, record := range response.Answer {
-		if strings.EqualFold(record.Header().Name, fqdn) {
-			record.Header().Name = question.Name
-		}
-	}
+	transport.ExchangeNames(ctx, names, question, func(fqdn string) transport.AsyncExchanger {
+		return t.newNameExchanger(message, fqdn, state.serverTransports)
+	}, callback)
 }
 
 func (t *Transport) newNameExchanger(message *mDNS.Msg, fqdn string, serverTransports []adapter.DNSTransport) transport.AsyncExchanger {
@@ -76,7 +44,7 @@ func (t *Transport) newNameExchanger(message *mDNS.Msg, fqdn string, serverTrans
 	}
 }
 
-func (t *Transport) nameList(name string) []string {
+func (t *Transport) nameList(search []string, name string) []string {
 	l := len(name)
 	rooted := l > 0 && name[l-1] == '.'
 	if l > 254 || l == 254 && !rooted {
@@ -94,11 +62,11 @@ func (t *Transport) nameList(name string) []string {
 	name += "."
 	// l++
 
-	names := make([]string, 0, 1+len(t.search))
+	names := make([]string, 0, 1+len(search))
 	if hasNdots && !avoidDNS(name) {
 		names = append(names, name)
 	}
-	for _, suffix := range t.search {
+	for _, suffix := range search {
 		fqdn := name + suffix
 		if !avoidDNS(fqdn) && len(fqdn) <= 254 {
 			names = append(names, fqdn)

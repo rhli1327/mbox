@@ -47,6 +47,7 @@ type URLTest struct {
 	tolerance                    uint16
 	idleTimeout                  time.Duration
 	group                        *URLTestGroup
+	checkAccess                  sync.Mutex
 	interruptExternalConnections bool
 }
 
@@ -99,10 +100,10 @@ func (s *URLTest) Close() error {
 }
 
 func (s *URLTest) Now() string {
-	if selectedOutboundTCP := s.group.selectedOutboundTCP.Load(); selectedOutboundTCP != nil {
-		return selectedOutboundTCP.Tag()
-	} else if selectedOutboundUDP := s.group.selectedOutboundUDP.Load(); selectedOutboundUDP != nil {
-		return selectedOutboundUDP.Tag()
+	if s.group.selectedOutboundTCP != nil {
+		return s.group.selectedOutboundTCP.Tag()
+	} else if s.group.selectedOutboundUDP != nil {
+		return s.group.selectedOutboundUDP.Tag()
 	}
 	return ""
 }
@@ -110,12 +111,12 @@ func (s *URLTest) Now() string {
 func (s *URLTest) NowForNetwork(network string) string {
 	switch network {
 	case N.NetworkTCP:
-		if selectedOutboundTCP := s.group.selectedOutboundTCP.Load(); selectedOutboundTCP != nil {
-			return selectedOutboundTCP.Tag()
+		if s.group.selectedOutboundTCP != nil {
+			return s.group.selectedOutboundTCP.Tag()
 		}
 	case N.NetworkUDP:
-		if selectedOutboundUDP := s.group.selectedOutboundUDP.Load(); selectedOutboundUDP != nil {
-			return selectedOutboundUDP.Tag()
+		if s.group.selectedOutboundUDP != nil {
+			return s.group.selectedOutboundUDP.Tag()
 		}
 	}
 	return ""
@@ -130,10 +131,14 @@ func (s *URLTest) URLTest(ctx context.Context) (map[string]uint16, error) {
 }
 
 func (s *URLTest) CheckOutbounds() {
-	s.group.CheckOutbounds(true)
+	s.group.CheckOutbounds(s.ctx, true)
 }
 
-func (s *URLTest) InterfaceUpdated() {
+func (s *URLTest) PerformUpdateCheck() {
+	s.group.performUpdateCheck()
+}
+
+func (s *URLTest) InterfaceUpdated(ctx context.Context) {
 	group := s.group
 	if group == nil {
 		return
@@ -141,7 +146,14 @@ func (s *URLTest) InterfaceUpdated() {
 	if group.pause.IsDevicePaused() || group.pause.IsNetworkPaused() {
 		return
 	}
-	go group.CheckOutbounds(true)
+	go func() {
+		s.checkAccess.Lock()
+		defer s.checkAccess.Unlock()
+		if ctx.Err() != nil {
+			return
+		}
+		group.CheckOutbounds(ctx, true)
+	}()
 }
 
 func (s *URLTest) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
@@ -149,9 +161,9 @@ func (s *URLTest) DialContext(ctx context.Context, network string, destination M
 	var outbound adapter.Outbound
 	switch N.NetworkName(network) {
 	case N.NetworkTCP:
-		outbound = s.group.selectedOutboundTCP.Load()
+		outbound = s.group.selectedOutboundTCP
 	case N.NetworkUDP:
-		outbound = s.group.selectedOutboundUDP.Load()
+		outbound = s.group.selectedOutboundUDP
 	default:
 		return nil, E.Extend(N.ErrUnknownNetwork, network)
 	}
@@ -173,7 +185,7 @@ func (s *URLTest) DialContext(ctx context.Context, network string, destination M
 
 func (s *URLTest) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
 	s.group.Touch()
-	outbound := s.group.selectedOutboundUDP.Load()
+	outbound := s.group.selectedOutboundUDP
 	if outbound == nil {
 		outbound, _ = s.group.Select(N.NetworkUDP)
 	}
@@ -213,11 +225,12 @@ type URLTestGroup struct {
 	idleTimeout                  time.Duration
 	history                      *urltest.HistoryStorage
 	checking                     atomic.Bool
-	selectedOutboundTCP          common.TypedValue[adapter.Outbound]
-	selectedOutboundUDP          common.TypedValue[adapter.Outbound]
+	selectedOutboundTCP          adapter.Outbound
+	selectedOutboundUDP          adapter.Outbound
 	interruptGroup               *interrupt.Group
 	interruptExternalConnections bool
 	access                       sync.Mutex
+	updateAccess                 sync.Mutex
 	ticker                       *time.Ticker
 	close                        chan struct{}
 	started                      bool
@@ -263,7 +276,7 @@ func (g *URLTestGroup) PostStart() {
 	defer g.access.Unlock()
 	g.started = true
 	g.lastActive.Store(time.Now())
-	go g.CheckOutbounds(false)
+	go g.CheckOutbounds(g.ctx, false)
 }
 
 func (g *URLTestGroup) Touch() {
@@ -301,16 +314,16 @@ func (g *URLTestGroup) Select(network string) (adapter.Outbound, bool) {
 	var minOutbound adapter.Outbound
 	switch network {
 	case N.NetworkTCP:
-		if selectedOutboundTCP := g.selectedOutboundTCP.Load(); selectedOutboundTCP != nil {
-			if history := g.history.LoadURLTestHistory(RealTag(selectedOutboundTCP)); history != nil {
-				minOutbound = selectedOutboundTCP
+		if g.selectedOutboundTCP != nil {
+			if history := g.history.LoadURLTestHistory(RealTag(g.selectedOutboundTCP)); history != nil {
+				minOutbound = g.selectedOutboundTCP
 				minDelay = history.Delay
 			}
 		}
 	case N.NetworkUDP:
-		if selectedOutboundUDP := g.selectedOutboundUDP.Load(); selectedOutboundUDP != nil {
-			if history := g.history.LoadURLTestHistory(RealTag(selectedOutboundUDP)); history != nil {
-				minOutbound = selectedOutboundUDP
+		if g.selectedOutboundUDP != nil {
+			if history := g.history.LoadURLTestHistory(RealTag(g.selectedOutboundUDP)); history != nil {
+				minOutbound = g.selectedOutboundUDP
 				minDelay = history.Delay
 			}
 		}
@@ -343,7 +356,7 @@ func (g *URLTestGroup) Select(network string) (adapter.Outbound, bool) {
 func (g *URLTestGroup) loopCheck(ticker *time.Ticker, closeChan <-chan struct{}) {
 	if time.Since(g.lastActive.Load()) > g.interval {
 		g.lastActive.Store(time.Now())
-		g.CheckOutbounds(false)
+		g.CheckOutbounds(g.ctx, false)
 	}
 	for {
 		select {
@@ -362,16 +375,21 @@ func (g *URLTestGroup) loopCheck(ticker *time.Ticker, closeChan <-chan struct{})
 			g.access.Unlock()
 			return
 		}
-		g.CheckOutbounds(false)
+		g.CheckOutbounds(g.ctx, false)
 	}
 }
 
-func (g *URLTestGroup) CheckOutbounds(force bool) {
-	_, _ = g.urlTest(g.ctx, force)
+func (g *URLTestGroup) CheckOutbounds(ctx context.Context, force bool) {
+	_, _ = g.urlTest(ctx, force)
 }
 
 func (g *URLTestGroup) URLTest(ctx context.Context) (map[string]uint16, error) {
 	return g.urlTest(ctx, false)
+}
+
+type urlTestResult struct {
+	delay uint16
+	err   error
 }
 
 func (g *URLTestGroup) urlTest(ctx context.Context, force bool) (map[string]uint16, error) {
@@ -399,20 +417,30 @@ func (g *URLTestGroup) urlTest(ctx context.Context, force bool) (map[string]uint
 			continue
 		}
 		b.Go(realTag, func() (any, error) {
-			testCtx, cancel := context.WithTimeout(g.ctx, C.TCPTimeout)
+			testCtx, cancel := context.WithTimeout(ctx, C.TCPTimeout)
 			defer cancel()
-			t, err := urltest.URLTest(testCtx, g.link, p)
-			if err != nil {
-				g.logger.Debug("outbound ", tag, " unavailable: ", err)
+			testChan := make(chan urlTestResult, 1)
+			go func() {
+				delay, testErr := urltest.URLTest(testCtx, g.link, p)
+				testChan <- urlTestResult{delay, testErr}
+			}()
+			var testResult urlTestResult
+			select {
+			case testResult = <-testChan:
+			case <-testCtx.Done():
+				testResult.err = testCtx.Err()
+			}
+			if testResult.err != nil {
+				g.logger.Debug("outbound ", tag, " unavailable: ", testResult.err)
 				g.history.DeleteURLTestHistory(realTag)
 			} else {
-				g.logger.Debug("outbound ", tag, " available: ", t, "ms")
+				g.logger.Debug("outbound ", tag, " available: ", testResult.delay, "ms")
 				g.history.StoreURLTestHistory(realTag, &adapter.URLTestHistory{
 					Time:  time.Now(),
-					Delay: t,
+					Delay: testResult.delay,
 				})
 				resultAccess.Lock()
-				result[tag] = t
+				result[tag] = testResult.delay
 				resultAccess.Unlock()
 			}
 			return nil, nil
@@ -424,20 +452,20 @@ func (g *URLTestGroup) urlTest(ctx context.Context, force bool) (map[string]uint
 }
 
 func (g *URLTestGroup) performUpdateCheck() {
+	g.updateAccess.Lock()
+	defer g.updateAccess.Unlock()
 	var updated bool
-	selectedOutboundTCP := g.selectedOutboundTCP.Load()
-	if outbound, exists := g.Select(N.NetworkTCP); outbound != nil && (selectedOutboundTCP == nil || (exists && outbound != selectedOutboundTCP)) {
-		if selectedOutboundTCP != nil {
+	if outbound, exists := g.Select(N.NetworkTCP); outbound != nil && (g.selectedOutboundTCP == nil || (exists && outbound != g.selectedOutboundTCP)) {
+		if g.selectedOutboundTCP != nil {
 			updated = true
 		}
-		g.selectedOutboundTCP.Store(outbound)
+		g.selectedOutboundTCP = outbound
 	}
-	selectedOutboundUDP := g.selectedOutboundUDP.Load()
-	if outbound, exists := g.Select(N.NetworkUDP); outbound != nil && (selectedOutboundUDP == nil || (exists && outbound != selectedOutboundUDP)) {
-		if selectedOutboundUDP != nil {
+	if outbound, exists := g.Select(N.NetworkUDP); outbound != nil && (g.selectedOutboundUDP == nil || (exists && outbound != g.selectedOutboundUDP)) {
+		if g.selectedOutboundUDP != nil {
 			updated = true
 		}
-		g.selectedOutboundUDP.Store(outbound)
+		g.selectedOutboundUDP = outbound
 	}
 	if updated {
 		g.interruptGroup.Interrupt(g.interruptExternalConnections)

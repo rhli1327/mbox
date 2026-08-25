@@ -15,6 +15,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/endpoint"
 	"github.com/sagernet/sing-box/common/dialer"
+	"github.com/sagernet/sing-box/common/iponly"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
@@ -82,6 +83,24 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 		options.DisableTCPKeepAlive = true
 	} else if options.TCPKeepAlive == 0 && options.TCPKeepAliveInterval == 0 {
 		options.TCPKeepAliveSystemDefaults = true
+	}
+	if options.CSD != nil && options.CSD.WrapperPath != "" {
+		err := adapter.CheckSecurityFeature(ctx, "OpenConnect `csd.wrapper_path`")
+		if err != nil {
+			return nil, err
+		}
+	}
+	if options.HIP != nil && options.HIP.WrapperPath != "" {
+		err := adapter.CheckSecurityFeature(ctx, "OpenConnect `hip.wrapper_path`")
+		if err != nil {
+			return nil, err
+		}
+	}
+	if options.TNCC != nil && options.TNCC.WrapperPath != "" {
+		err := adapter.CheckSecurityFeature(ctx, "OpenConnect `tncc.wrapper_path`")
+		if err != nil {
+			return nil, err
+		}
 	}
 	options.UDPBindPort = options.DTLSLocalPort
 	loopContext, cancelLoop := context.WithCancel(ctx)
@@ -468,7 +487,7 @@ func (e *Endpoint) Close() error {
 	return err
 }
 
-func (e *Endpoint) InterfaceUpdated() {
+func (e *Endpoint) InterfaceUpdated(ctx context.Context) {
 	e.client.RestartSession()
 }
 
@@ -569,16 +588,20 @@ func (e *Endpoint) ListenPacketWithDestination(ctx context.Context, destination 
 		if err != nil {
 			return nil, netip.Addr{}, err
 		}
-		return N.ListenSerial(ctx, e.device, destination, destinationAddresses)
+		packetConn, destinationAddress, err := N.ListenSerial(ctx, e.device, destination, destinationAddresses)
+		if err != nil {
+			return nil, netip.Addr{}, err
+		}
+		return iponly.NewPacketConn(e.logger, packetConn), destinationAddress, nil
 	}
 	packetConn, err := e.device.ListenPacket(ctx, destination)
 	if err != nil {
 		return nil, netip.Addr{}, err
 	}
 	if destination.IsIP() {
-		return packetConn, destination.Addr, nil
+		return iponly.NewPacketConn(e.logger, packetConn), destination.Addr, nil
 	}
-	return packetConn, netip.Addr{}, nil
+	return iponly.NewPacketConn(e.logger, packetConn), netip.Addr{}, nil
 }
 
 func (e *Endpoint) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
