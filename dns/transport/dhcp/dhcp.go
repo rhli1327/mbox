@@ -111,6 +111,7 @@ func (t *Transport) Close() error {
 func (t *Transport) Reset() {
 	t.transportLock.Lock()
 	t.updatedAt = time.Time{}
+	t.lastError = nil
 	t.servers = nil
 	t.transportLock.Unlock()
 }
@@ -127,13 +128,7 @@ func (t *Transport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg,
 }
 
 func (t *Transport) Exchange0(ctx context.Context, message *mDNS.Msg, servers []M.Socksaddr) (*mDNS.Msg, error) {
-	question := message.Question[0]
-	domain := dns.FqdnToDomain(question.Name)
-	if len(servers) == 1 || !(message.Question[0].Qtype == mDNS.TypeA || message.Question[0].Qtype == mDNS.TypeAAAA) {
-		return t.exchangeSingleRequest(ctx, servers, message, domain)
-	} else {
-		return t.exchangeParallel(ctx, servers, message, domain)
-	}
+	return t.exchangeSearch(ctx, servers, message, dns.FqdnToDomain(message.Question[0].Name))
 }
 
 func (t *Transport) Fetch() []M.Socksaddr {
@@ -295,9 +290,14 @@ func (t *Transport) fetchServersResponse(iface *control.Interface, packetConn ne
 func (t *Transport) recreateServers(iface *control.Interface, dhcpPacket *dhcpv4.DHCPv4) error {
 	searchList := dhcpPacket.DomainSearch()
 	if searchList != nil && len(searchList.Labels) > 0 {
-		t.search = searchList.Labels
+		t.search = common.Filter(common.Map(searchList.Labels, mDNS.Fqdn), func(it string) bool {
+			return it != "."
+		})
 	} else if dhcpPacket.DomainName() != "" {
-		t.search = []string{dhcpPacket.DomainName()}
+		domainName := mDNS.Fqdn(dhcpPacket.DomainName())
+		if domainName != "." {
+			t.search = []string{domainName}
+		}
 	}
 	serverAddrs := common.Map(dhcpPacket.DNS(), func(it net.IP) M.Socksaddr {
 		return M.SocksaddrFrom(M.AddrFromIP(it), 53)
