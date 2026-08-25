@@ -1,9 +1,14 @@
 package build_shared
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/sagernet/sing-box/common/badversion"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/shell"
+
+	"golang.org/x/mod/semver"
 )
 
 func ReadTag() (string, error) {
@@ -35,4 +40,33 @@ func ReadTagVersion() (badversion.Version, error) {
 		}
 	}
 	return version, nil
+}
+
+func ReadHighestReachableVersion(revision string) (string, error) {
+	tagsOutput, err := shell.Exec("git", "tag", "--merged", revision, "--list", "v[0-9]*").ReadOutput()
+	if err != nil {
+		return "", err
+	}
+	highestTag := highestVersionTag(strings.Fields(tagsOutput))
+	if highestTag == "" {
+		return "", fmt.Errorf("no semantic version tag is reachable from %s", revision)
+	}
+	return strings.TrimPrefix(highestTag, "v"), nil
+}
+
+func highestVersionTag(tags []string) string {
+	var highestTag string
+	for _, tag := range tags {
+		if !semver.IsValid(tag) || isMboxBuildTag(tag) {
+			continue
+		}
+		if highestTag == "" || semver.Compare(tag, highestTag) > 0 {
+			highestTag = tag
+		}
+	}
+	return highestTag
+}
+
+func isMboxBuildTag(tag string) bool {
+	return strings.Contains(tag, "+mbox.") || strings.Contains(tag, "-mbox.")
 }

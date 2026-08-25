@@ -42,9 +42,7 @@ jobs:
         run: |
           set -xeuo pipefail
           git fetch origin mieru --tags --force
-          upstream_base="$(git merge-base HEAD origin/mieru)"
-          base_tag="$(git describe --tags --abbrev=0 "$upstream_base")"
-          base_version="${base_tag#v}"
+          base_version="$(go run ./cmd/internal/read_tag --highest-reachable HEAD)"
           traffic_version="${base_version}+traffic.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::7}"
           echo "TRAFFIC_VERSION=${traffic_version}" >> "$GITHUB_ENV"
 
@@ -96,10 +94,11 @@ jobs:
           set -xeuo pipefail
           sudo gem install fpm
           cp .fpm_systemd .fpm
+          package_version="${TRAFFIC_VERSION//-/\~}"
           package_name="mbox-traffic-statistics_linux_${DEBIAN_ARCH}.deb"
           package_path="dist/${package_name}"
           fpm -t deb \
-            -v "$TRAFFIC_VERSION" \
+            -v "$package_version" \
             -p "$package_path" \
             --architecture "$DEBIAN_ARCH" \
             dist/mbox=/usr/bin/mbox
