@@ -40,32 +40,21 @@ jobs:
             echo "::error::Unable to determine the upstream mbox version."
             exit 1
           fi
-          local_mieru_commit="$(git log origin/mieru --format=%H --grep='^feat: add mieru protocol$' -1)"
-          if [[ -z "$local_mieru_commit" ]]; then
-            echo "::error::Unable to find the local mieru integration commit."
-            exit 1
+          if git merge-base --is-ancestor "$upstream_mieru" origin/mieru; then
+            echo "Upstream mieru commit $upstream_mieru is already merged."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          upstream_patch_id="$(git show --pretty=format: "$upstream_mieru" | git patch-id --stable | cut -d' ' -f1)"
-          local_patch_id="$(git show --pretty=format: "$local_mieru_commit" | git patch-id --stable | cut -d' ' -f1)"
-          if [[ -z "$upstream_patch_id" || "$upstream_patch_id" != "$local_patch_id" ]]; then
-            echo "::error::The upstream mieru patch changed and requires manual review."
-            exit 1
-          fi
-
-          upstream_base="$(git rev-parse "${upstream_mieru}^")"
-          git checkout -B sync-upstream-mieru
-          git merge --no-edit "$upstream_base"
+          git checkout -B sync-upstream-mieru origin/mieru
+          git merge --no-ff --no-edit "$upstream_mieru"
           printf '%s\n' "${upstream_tag#v}" > release/BASE_VERSION
           if ! git diff --quiet -- release/BASE_VERSION; then
             git add release/BASE_VERSION
             git commit -m "release: track upstream ${upstream_tag#v}"
           fi
-          if git diff --quiet origin/mieru...HEAD; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
+          git merge-base --is-ancestor "$upstream_mieru" HEAD
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Push sync branch
         if: steps.merge.outputs.changed == 'true'
