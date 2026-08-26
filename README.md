@@ -19,7 +19,8 @@ release fork:
 - The module path and internal Go imports remain `github.com/sagernet/sing-box`
   to reduce merge conflicts when syncing upstream changes.
 - Upstream changes are synced from `enfein/mbox` by an automated pull request
-  workflow instead of being pushed directly into `mieru`.
+  that preserves the actual upstream commit in `mieru` history. Local packaging
+  and release customizations remain separate downstream changes.
 
 ## Example Configuration with mieru Outbound (Proxy Client)
 
