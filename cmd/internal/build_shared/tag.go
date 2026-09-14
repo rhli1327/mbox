@@ -6,6 +6,7 @@ import (
 
 	"github.com/sagernet/sing-box/common/badversion"
 	"github.com/sagernet/sing/common"
+	F "github.com/sagernet/sing/common/format"
 	"github.com/sagernet/sing/common/shell"
 
 	"golang.org/x/mod/semver"
@@ -69,4 +70,8 @@ func highestVersionTag(tags []string) string {
 
 func isMboxBuildTag(tag string) bool {
 	return strings.Contains(tag, "+mbox.") || strings.Contains(tag, "-mbox.")
+}
+
+func TestFlightVersion(version badversion.Version) string {
+	return F.ToString(version.Major, ".", version.Minor, ".10")
 }
