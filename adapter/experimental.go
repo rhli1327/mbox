@@ -173,10 +173,3 @@ type URLTestGroup interface {
 	URLTest(ctx context.Context) (map[string]uint16, error)
 	PerformUpdateCheck()
 }
-
-func OutboundTag(detour Outbound) string {
-	if group, isGroup := detour.(OutboundGroup); isGroup {
-		return group.Now()
-	}
-	return detour.Tag()
-}
