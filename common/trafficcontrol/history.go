@@ -443,9 +443,9 @@ func (h *History) Query(ctx context.Context, query HistoryQuery) (HistoryQueryRe
 		return HistoryQueryResult{}, queryError(err)
 	}
 
-	// Creating the store snapshot and copying pending deltas under the flush
-	// lock establishes one consistent query boundary. Once the snapshot exists,
-	// a later flush can proceed without changing the persisted side of it.
+	// Seal pending deltas under the flush lock. PostgreSQL's durable boundary
+	// can then wait for delivery without blocking new local flushes; Bolt must
+	// capture its snapshot and pending overlay under the same lock.
 	h.flushAccess.Lock()
 	var snapshot historyStoreSnapshot
 	pending := make(historyBatch)
@@ -461,6 +461,7 @@ func (h *History) Query(ctx context.Context, query HistoryQuery) (HistoryQueryRe
 			return HistoryQueryResult{}, commitErr
 		}
 		pending = make(historyBatch)
+		h.flushAccess.Unlock()
 		snapshot, err = committedStore.BeginReadCommitted(queryCtx, boundary)
 	} else {
 		snapshot, err = h.store.BeginRead(queryCtx)
@@ -472,8 +473,8 @@ func (h *History) Query(ctx context.Context, query HistoryQuery) (HistoryQueryRe
 			}
 			h.access.Unlock()
 		}
+		h.flushAccess.Unlock()
 	}
-	h.flushAccess.Unlock()
 	if err != nil {
 		return HistoryQueryResult{}, queryError(err)
 	}

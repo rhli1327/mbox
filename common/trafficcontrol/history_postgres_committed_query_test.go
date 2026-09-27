@@ -82,6 +82,97 @@ func TestPostgresCommittedQueryRejectsLossDuringWrite(t *testing.T) {
 	}
 }
 
+func TestPostgresCommittedQueryDoesNotBlockLocalFlush(t *testing.T) {
+	applyStarted := make(chan struct{}, 1)
+	remote := newCommittedQueryTestRemote()
+	remote.apply = func(ctx context.Context, _ historyBatch) error {
+		select {
+		case applyStarted <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	history := newCommittedQueryTestHistory(t, remote, 1<<20)
+	addCommittedQueryPending(history, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	queryDone := make(chan error, 1)
+	go func() {
+		_, err := history.Query(ctx, HistoryQuery{})
+		queryDone <- err
+	}()
+	select {
+	case <-applyStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("query did not start delivery")
+	}
+	addCommittedQueryPending(history, 2)
+	flushDone := make(chan error, 1)
+	go func() { flushDone <- history.flush() }()
+	select {
+	case err := <-flushDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		<-queryDone
+		<-flushDone
+		t.Fatal("waiting for remote delivery blocked a local durable flush")
+	}
+	store := history.store.(*postgresSpoolStore)
+	if status := store.Status(); status.QueueDepth != 2 {
+		t.Fatalf("new traffic was not durably queued: %#v", status)
+	}
+	cancel()
+	if err := <-queryDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled query error = %v", err)
+	}
+}
+
+func TestHistoryHTTPQueryDeadlineRetainsPendingDelivery(t *testing.T) {
+	remote := newCommittedQueryTestRemote()
+	applyRelease := make(chan struct{})
+	remote.apply = func(ctx context.Context, _ historyBatch) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-applyRelease:
+			return nil
+		}
+	}
+	history := newCommittedQueryTestHistory(t, remote, 1<<20)
+	addCommittedQueryPending(history, 1)
+	responseDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/query", bytes.NewBufferString(`{}`))
+		newHistoryHTTPHandler(history, 20*time.Millisecond).ServeHTTP(response, request)
+		responseDone <- response
+	}()
+	select {
+	case response := <-responseDone:
+		if response.Code != http.StatusServiceUnavailable ||
+			response.Body.String() != `{"error":"traffic statistics are temporarily unavailable"}`+"\n" {
+			t.Fatalf("timed-out response: status=%d body=%s", response.Code, response.Body.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP query did not enforce its deadline")
+	}
+	store := history.store.(*postgresSpoolStore)
+	if status := store.Status(); status.QueueDepth != 1 || status.DroppedBatches != 0 {
+		t.Fatalf("query timeout discarded queued traffic: %#v", status)
+	}
+	close(applyRelease)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result, err := history.Query(ctx, HistoryQuery{})
+	if err != nil || result.Totals.Connections != 1 {
+		t.Fatalf("query after recovery: totals=%#v error=%v", result.Totals, err)
+	}
+}
+
 func TestPostgresCommittedQueryReturnsUnavailableOnTimeout(t *testing.T) {
 	applyStarted := make(chan struct{}, 1)
 	remote := newCommittedQueryTestRemote()

@@ -249,7 +249,9 @@ a durable committed boundary before opening the remote snapshot. Filtering,
 aggregation, sorting, totals, and pagination use that single consistent
 snapshot. A successful stale remote result is never substituted. Timeout or
 unavailability maps to stable, redacted HTTP 503; explicit client cancellation
-remains cancellation.
+remains cancellation. HTTP queries have a 30-second deadline, including waiting
+for the committed boundary. While PostgreSQL delivery is pending, new traffic
+can still be flushed to the durable local spool.
 
 ### Offline Bolt migration
 

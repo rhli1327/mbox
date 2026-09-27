@@ -225,6 +225,10 @@ func TestHistoryHTTPHandlerUsesReaderInterface(t *testing.T) {
 			}},
 		},
 		queryCheck: func(ctx context.Context, query HistoryQuery) {
+			deadline, ok := ctx.Deadline()
+			if remaining := time.Until(deadline); !ok || remaining <= 0 || remaining > historyQueryTimeout {
+				t.Fatalf("reader did not receive a bounded query context: deadline=%v", deadline)
+			}
 			if ctx.Value(contextKey) != "request" {
 				t.Fatal("reader did not receive request context")
 			}

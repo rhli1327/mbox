@@ -15,6 +15,7 @@ const (
 	historyQueryFilterLimit     = 256
 	historyQueryFilterValueSize = 1024
 	historyQuerySearchSize      = 1024
+	historyQueryTimeout         = 30 * time.Second
 )
 
 type capabilitiesResponse struct {
@@ -93,6 +94,10 @@ type queryResponseRow struct {
 }
 
 func NewHistoryHTTPHandler(history HistoryReader) http.Handler {
+	return newHistoryHTTPHandler(history, historyQueryTimeout)
+}
+
+func newHistoryHTTPHandler(history HistoryReader, queryTimeout time.Duration) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /capabilities", func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(writer, http.StatusOK, capabilitiesResponse{
@@ -202,7 +207,9 @@ func NewHistoryHTTPHandler(history HistoryReader) http.Handler {
 			writeAPIError(writer, http.StatusBadRequest, err.Error())
 			return
 		}
-		result, err := history.Query(request.Context(), query)
+		queryCtx, cancel := context.WithTimeout(request.Context(), queryTimeout)
+		defer cancel()
+		result, err := history.Query(queryCtx, query)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return

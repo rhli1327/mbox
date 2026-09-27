@@ -1421,17 +1421,34 @@ func (s *historySpool) readStatusUnlocked() (historySpoolStatus, error) {
 		s.faults,
 		"status",
 		func(tx *bbolt.Tx) error {
+			// Queue counters are updated atomically with each mutation. Validate
+			// payloads at startup and when leasing/acknowledging a batch, rather
+			// than decoding the entire backlog every time progress is checked.
+			if err := validateHistorySpoolBuckets(tx); err != nil {
+				return err
+			}
+			metadata := tx.Bucket(historySpoolMetadataBucket)
+			if err := validateHistorySpoolMetadataKeys(metadata); err != nil {
+				return err
+			}
 			var err error
-			status, err = validateHistorySpoolTransaction(
-				tx,
-				historySpoolSafeLogicalSize,
-				true,
-				s.faults,
-			)
-			return err
+			status, err = decodeHistorySpoolStatus(metadata)
+			if err != nil {
+				return err
+			}
+			cursor := tx.Bucket(historySpoolInflightBucket).Cursor()
+			key, _ := cursor.First()
+			status.InFlight = key != nil
+			if next, _ := cursor.Next(); next != nil {
+				return fmt.Errorf("%w: multiple inflight batches", ErrSpoolCorrupt)
+			}
+			return nil
 		},
 	)
-	return status, err
+	if err != nil {
+		return historySpoolStatus{}, err
+	}
+	return status, nil
 }
 
 func (s *historySpool) Close() error {
