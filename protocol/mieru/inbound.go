@@ -278,6 +278,10 @@ func buildMieruServerConfig(_ context.Context, options option.MieruInboundOption
 	if options.ListenOptions.ListenPort == 0 {
 		return nil, nil, E.New("listen_port must be set")
 	}
+	var listenIPAddress *string
+	if options.ListenOptions.Listen != nil {
+		listenIPAddress = proto.String(netip.Addr(*options.ListenOptions.Listen).String())
+	}
 	portBindings := []*mierupb.PortBinding{
 		{
 			Port:     proto.Int32(int32(options.ListenOptions.ListenPort)),
@@ -304,6 +308,7 @@ func buildMieruServerConfig(_ context.Context, options option.MieruInboundOption
 	}
 	return &mieruserver.ServerConfig{
 		Config: &mierupb.ServerConfig{
+			ListenIPAddress:  listenIPAddress,
 			PortBindings:     portBindings,
 			Users:            users,
 			TrafficPattern:   trafficPattern,
