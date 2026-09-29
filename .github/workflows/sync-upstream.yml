@@ -32,18 +32,24 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/enfein/mbox.git
           git fetch --no-tags upstream mieru
-          git fetch --no-tags upstream '+refs/tags/*:refs/upstream-tags/enfein/*'
 
           upstream_mieru=upstream/mieru
-          upstream_tag="$(git for-each-ref --points-at "$upstream_mieru" --sort=-version:refname --format='%(refname:strip=3)' refs/upstream-tags/enfein | head -n1)"
-          if [[ ! "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
-            echo "::error::Unable to determine the upstream mbox version."
-            exit 1
-          fi
           if git merge-base --is-ancestor "$upstream_mieru" origin/mieru; then
             echo "Upstream mieru commit $upstream_mieru is already merged."
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+
+          git fetch --no-tags upstream '+refs/tags/*:refs/upstream-tags/enfein/*'
+          upstream_tag="$(git for-each-ref --points-at "$upstream_mieru" --sort=-version:refname --count=1 --format='%(refname:strip=3)' refs/upstream-tags/enfein)"
+          if [[ -z "$upstream_tag" ]]; then
+            echo "::notice::Upstream mieru has no release tag yet; waiting for a tagged release."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "::error::Unable to determine the upstream mbox version."
+            exit 1
           fi
 
           git checkout -B sync-upstream-mieru origin/mieru
