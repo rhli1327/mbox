@@ -51,7 +51,20 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.26.7
+          go-version: 1.26.8
+          cache: false
+      - name: Cache Go modules
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-linux-${{ hashFiles('go.sum') }}
+          restore-keys: go-mod-linux-
+      - name: Cache Go tool builds
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-tools-linux-${{ hashFiles('go.sum') }}
+          restore-keys: go-build-tools-linux-
       - name: Check input version
         if: github.event_name == 'workflow_dispatch'
         run: |-
@@ -88,7 +101,14 @@ jobs:
         if: ${{ ! matrix.legacy_win7 }}
         uses: actions/setup-go@v5
         with:
-          go-version: 1.26.7
+          go-version: 1.26.8
+          cache: false
+      - name: Cache Go modules
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-linux-${{ hashFiles('go.sum') }}
+          restore-keys: go-mod-linux-
       - name: Cache Go for Windows 7
         if: matrix.legacy_win7
         id: cache-go-for-windows7
@@ -96,7 +116,7 @@ jobs:
         with:
           path: |
             ~/go/go_win7
-          key: go_win7_1267
+          key: go_win7_1268
       - name: Setup Go for Windows 7
         if: matrix.legacy_win7 && steps.cache-go-for-windows7.outputs.cache-hit != 'true'
         env:
@@ -314,8 +334,6 @@ jobs:
             -p "dist/mbox_${{ needs.calculate_version.outputs.version }}_${{ matrix.os }}_${{ matrix.debian }}.deb" \
             --architecture ${{ matrix.debian }} \
             dist/mbox=/usr/bin/mbox
-          # curl -Lo '/tmp/debsigs.diff' 'https://gitlab.com/debsigs/debsigs/-/commit/160138f5de1ec110376d3c807b60a37388bc7c90.diff'
-          # sudo patch /usr/bin/debsigs < '/tmp/debsigs.diff'
           # rm -rf $HOME/.gnupg
           # gpg --pinentry-mode loopback --passphrase "${{ secrets.GPG_PASSPHRASE }}" --import <<EOF
           # ${{ secrets.GPG_KEY }}
@@ -437,7 +455,7 @@ jobs:
         if: ${{ ! matrix.legacy_osx }}
         uses: actions/setup-go@v5
         with:
-          go-version: 1.26.7
+          go-version: 1.26.8
       - name: Cache Go for macOS 10.13
         if: matrix.legacy_osx
         id: cache-go-for-macos1013
@@ -445,7 +463,7 @@ jobs:
         with:
           path: |
             ~/go/go_osx
-          key: go_osx_1267
+          key: go_osx_1268
       - name: Setup Go for macOS 10.13
         if: matrix.legacy_osx && steps.cache-go-for-macos1013.outputs.cache-hit != 'true'
         env:
@@ -531,7 +549,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.26.7
+          go-version: 1.26.8
       - name: Set tag
         run: |-
           git ls-remote --exit-code --tags origin v${{ needs.calculate_version.outputs.version }} || echo "PUBLISHED=false" >> "$env:GITHUB_ENV"
@@ -620,7 +638,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.26.7
+          go-version: 1.26.8
       - name: Setup Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
@@ -714,7 +732,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.26.7
+          go-version: 1.26.8
       - name: Setup Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
@@ -813,7 +831,7 @@ jobs:
         if: matrix.if
         uses: actions/setup-go@v5
         with:
-          go-version: 1.26.7
+          go-version: 1.26.8
       - name: Set tag
         if: matrix.if
         run: |-
